@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Contact, Message } from '../lib/types';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, doc, query, orderBy, onSnapshot, setDoc, serverTimestamp, getDoc } from 'firebase/firestore';
-import { Send, ArrowLeft, Trash2, Shield, Lock, Plus, Smile, Mic, Paperclip, FileText, X, Download } from 'lucide-react';
+import { Send, ArrowLeft, Trash2, Shield, Lock, Plus, Smile, Mic, Paperclip, FileText, X, Download, MoreVertical, Ban, Eraser } from 'lucide-react';
 import { getAvatarColor, cn } from '../lib/utils';
 import { getTheme } from '../lib/theme';
 
@@ -75,6 +75,8 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [selectedFileLoading, setSelectedFileLoading] = useState(false);
   const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
+  const [showOptionsMenu, setShowOptionsMenu] = useState(false);
+  const [localClearedTime, setLocalClearedTime] = useState<number | null>(null);
 
   // Voice recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -103,6 +105,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
     setIsConvReady(false);
     setSelectedFile(null);
     setShowEmojiPicker(false);
+    setLocalClearedTime(null);
     
     // Ensure Conversation document exists so rules allow messages
     const ensureConversation = async () => {
@@ -153,7 +156,9 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const msgs: Message[] = [];
-      snapshot.forEach(d => msgs.push(d.data() as Message));
+      snapshot.forEach(d => {
+        msgs.push(d.data() as Message);
+      });
       setMessages(msgs);
       
       // Update last read of this contact
@@ -180,8 +185,8 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
 
     setSelectedFileLoading(true);
 
-    if (file.size > 2500000) { 
-      alert("Attachment size exceeds limits. Please select a file smaller than 2MB.");
+    if (file.size > 500000) { 
+      alert("Attachment size exceeds limits. Please select a file smaller than 500KB.");
       setSelectedFileLoading(false);
       return;
     }
@@ -307,17 +312,66 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
   };
 
   const handleRemove = async () => {
-    if (!window.confirm('Remove this contact?')) return;
+    if (!window.confirm('Delete this contact?')) return;
     try {
-      const { deleteDoc } = await import('firebase/firestore');
-      await deleteDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code));
+      setShowOptionsMenu(false);
+      await setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
+        isDeleted: true
+      }, { merge: true });
       onRemoveContact();
     } catch(err) {
-      console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.code}/contacts/${contact.code}`);
+    }
+  };
+
+  const handleClearChat = async () => {
+    if (!window.confirm('Clear all messages in this chat?')) return;
+    try {
+      setShowOptionsMenu(false);
+      const now = Date.now();
+      setLocalClearedTime(now);
+      await setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
+        clearedAt: serverTimestamp()
+      }, { merge: true });
+    } catch(err) {
+      setLocalClearedTime(null);
+      handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.code}/contacts/${contact.code}`);
+    }
+  };
+
+  const handleToggleBlock = async () => {
+    const isBlocking = !contact.isBlocked;
+    if (isBlocking && !window.confirm('Block this contact? They will not be able to message you.')) return;
+    try {
+      setShowOptionsMenu(false);
+      await setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
+        isBlocked: isBlocking
+      }, { merge: true });
+    } catch(err) {
+      handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.code}/contacts/${contact.code}`);
     }
   };
 
   const name = contact.displayName || contact.code;
+
+  const getTimestampMs = (ts: any): number => {
+    if (!ts) return 0;
+    if (typeof ts === 'number') return ts;
+    if (ts instanceof Date) return ts.getTime();
+    if (typeof ts.getTime === 'function') return ts.getTime();
+    if (typeof ts.toMillis === 'function') return ts.toMillis();
+    if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+    if (ts.seconds !== undefined) return ts.seconds * 1000;
+    return Date.now();
+  };
+
+  const dbClearedTime = contact.clearedAt ? getTimestampMs(contact.clearedAt) : 0;
+  const clearedTime = localClearedTime !== null ? Math.max(localClearedTime, dbClearedTime) : dbClearedTime;
+
+  const visibleMessages = messages.filter(msg => {
+    const msgTime = msg.timestamp ? getTimestampMs(msg.timestamp) : Date.now();
+    return msgTime >= clearedTime;
+  });
 
   return (
     <div className="flex flex-col h-full bg-transparent relative">
@@ -331,7 +385,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
       />
 
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-white pt-6">
+      <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-white/70 backdrop-blur-md pt-6">
         <div className="flex items-center gap-3">
           <button 
             onClick={onBack}
@@ -352,17 +406,45 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
           </div>
         </div>
         
-        <div className="flex items-center gap-2">
-          <button 
-            onClick={handleRemove}
-            className="p-2 text-slate-400 hover:text-red-500 transition-colors rounded-full hover:bg-slate-50"
-            title="Remove contact"
-          >
-            <Trash2 className="w-5 h-5" />
-          </button>
-          <div className={`w-8 h-8 flex items-center justify-center ${activeTheme.textAccent} ${activeTheme.bgLight} rounded-full`}>
+        <div className="flex items-center gap-2 relative">
+          <div className={`w-8 h-8 flex items-center justify-center ${activeTheme.textAccent} ${activeTheme.bgLight} rounded-full`} title="End-to-end encrypted">
             <Shield className="w-4 h-4" />
           </div>
+          <button 
+            onClick={() => setShowOptionsMenu(!showOptionsMenu)}
+            className="p-2 text-slate-400 hover:text-slate-600 transition-colors rounded-full hover:bg-slate-50"
+          >
+            <MoreVertical className="w-5 h-5" />
+          </button>
+
+          {showOptionsMenu && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowOptionsMenu(false)} />
+              <div className="absolute right-0 top-12 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 z-50 overflow-hidden py-2 animate-in fade-in zoom-in duration-150">
+                <button 
+                  onClick={handleClearChat}
+                  className="w-full px-4 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
+                >
+                  <Eraser className="w-4 h-4 text-slate-400" />
+                  Clear chat
+                </button>
+                <button 
+                  onClick={handleToggleBlock}
+                  className="w-full px-4 py-2.5 text-left text-sm font-medium text-red-600 hover:bg-red-50 flex items-center gap-3 transition-colors"
+                >
+                  <Ban className="w-4 h-4 text-red-500" />
+                  {contact.isBlocked ? "Unblock contact" : "Block contact"}
+                </button>
+                <button 
+                  onClick={handleRemove}
+                  className="w-full px-4 py-2.5 text-left text-sm font-medium text-red-600 hover:bg-red-50 flex items-center gap-3 transition-colors"
+                >
+                  <Trash2 className="w-4 h-4 text-red-500" />
+                  Delete contact
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -380,14 +462,14 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
           </div>
         </div>
 
-        {messages.length === 0 ? (
+        {visibleMessages.length === 0 ? (
           <div className="text-center text-slate-400 text-sm py-4">
             Today
           </div>
         ) : (
           <>
             <div className="text-center text-slate-400 text-xs font-medium py-2">Today</div>
-            {messages.map((msg, i) => {
+            {visibleMessages.map((msg, i) => {
               const isMe = msg.senderCode === currentUser.code;
               const timeStr = msg.timestamp ? new Date(msg.timestamp.toMillis()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...';
               
@@ -472,7 +554,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
 
       {/* Floating Emojis Menu popover */}
       {showEmojiPicker && (
-        <div className="absolute bottom-[85px] left-4 right-4 z-40 bg-white border border-slate-200 rounded-2xl shadow-xl p-4 max-h-[220px] overflow-y-auto">
+        <div className="absolute bottom-[85px] left-4 right-4 z-40 bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-xl p-4 max-h-[220px] overflow-y-auto">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Select Emoji</span>
             <button 
@@ -545,8 +627,15 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
       )}
 
       {/* Input Action Form */}
-      <div className="absolute bottom-0 w-full p-4 bg-white border-t border-slate-100 pb-safe">
-        <form onSubmit={handleSend} className="flex items-center gap-3">
+      <div className="absolute bottom-0 w-full p-4 bg-white/70 backdrop-blur-md border-t border-slate-100 pb-safe">
+        {contact.isBlocked ? (
+          <div className="flex items-center justify-center p-3 bg-red-50 rounded-full border border-red-100">
+            <p className="text-sm text-red-600 font-medium flex items-center gap-2">
+              <Ban className="w-4 h-4" /> You blocked this contact
+            </p>
+          </div>
+        ) : (
+          <form onSubmit={handleSend} className="flex items-center gap-3">
           
           {/* File attachment toggle */}
           <button 
@@ -571,7 +660,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
                 onClick={stopVoiceRecording}
                 className={`text-xs font-bold ${activeTheme.textAccent} hover:text-white ${activeTheme.bgHover} transition-all duration-200 ${activeTheme.bgLight} px-3 py-1 rounded-full border ${activeTheme.bgLightBorder}`}
               >
-                Send
+                Done
               </button>
             </div>
           ) : (
@@ -601,8 +690,8 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
               {(inputText.trim() || selectedFile) && (
                 <button
                   type="submit"
-                  disabled={isSending}
-                  className={`w-8 h-8 rounded-full ${activeTheme.bgAccent} ${activeTheme.bgHover} text-white flex items-center justify-center transition-colors flex-shrink-0`}
+                  disabled={isSending || selectedFileLoading}
+                  className={`w-8 h-8 rounded-full ${activeTheme.bgAccent} ${activeTheme.bgHover} text-white flex items-center justify-center transition-colors flex-shrink-0 disabled:opacity-50`}
                 >
                   <Send className="w-4 h-4 ml-0.5" />
                 </button>
@@ -638,6 +727,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
             </button>
           )}
         </form>
+        )}
       </div>
 
       {/* Image zoom Modal overlay */}

@@ -28,12 +28,12 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
     const pat = currentUser.patternStyle || 'dots';
     
     const colorMap: Record<string, string> = {
-      violet: 'rgba(124, 58, 237, 0.06)',
-      indigo: 'rgba(79, 70, 229, 0.06)',
-      sky: 'rgba(14, 165, 233, 0.07)',
-      emerald: 'rgba(5, 150, 105, 0.06)',
-      amber: 'rgba(217, 119, 6, 0.06)',
-      rose: 'rgba(225, 29, 72, 0.06)'
+      violet: 'rgba(124, 58, 237, 0.12)',
+      indigo: 'rgba(79, 70, 229, 0.12)',
+      sky: 'rgba(14, 165, 233, 0.14)',
+      emerald: 'rgba(5, 150, 105, 0.12)',
+      amber: 'rgba(217, 119, 6, 0.12)',
+      rose: 'rgba(225, 29, 72, 0.12)'
     };
     
     const rgbaColor = colorMap[color] || colorMap['violet'];
@@ -56,9 +56,10 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
     if (pat === 'bubbles') {
       return {
         backgroundImage: `
-          radial-gradient(circle at 100% 150%, transparent 24%, ${rgbaColor} 24%, ${rgbaColor} 28%, transparent 28%, transparent),
-          radial-gradient(circle at 0% 150%, transparent 24%, ${rgbaColor} 24%, ${rgbaColor} 28%, transparent 28%, transparent)
+          radial-gradient(circle, transparent 20%, ${rgbaColor} 20%, ${rgbaColor} 25%, transparent 25%),
+          radial-gradient(circle, transparent 20%, ${rgbaColor} 20%, ${rgbaColor} 25%, transparent 25%)
         `,
+        backgroundPosition: '0 0, 20px 20px',
         backgroundSize: '40px 40px'
       };
     }
@@ -119,19 +120,22 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const newContacts: Contact[] = [];
       snapshot.forEach((doc) => {
-        newContacts.push(doc.data() as Contact);
+        const contactData = doc.data() as Contact;
+        if (!contactData.isDeleted) {
+          newContacts.push(contactData);
+        }
       });
       setContacts(newContacts);
       
-      // Update active contact if its data changed
-      if (activeContact) {
-        const updated = newContacts.find(c => c.code === activeContact.code);
-        if (updated) {
-           // We might not need to update state if we just rely on the contacts array
-           // but keeping it in sync is good if we display name from activeContact
-           setActiveContact(updated);
-        }
-      }
+      // Update active contact if its data changed using callback form to avoid stale closure
+      setActiveContact(prev => {
+        if (!prev) return null;
+        const foundDoc = snapshot.docs.find(d => d.id === prev.code);
+        if (!foundDoc) return null;
+        const contactData = foundDoc.data() as Contact;
+        if (contactData.isDeleted) return null;
+        return contactData;
+      });
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, `users/${currentUser.code}/contacts`);
     });
@@ -165,7 +169,7 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
       </div>
 
       {/* Chat Pane */}
-      <div className={`flex-1 flex flex-col min-w-0 ${activeTheme.bgLight} ${isMobileChatOpen ? 'block' : 'hidden md:flex'}`}>
+      <div className={`flex-1 flex flex-col min-w-0 bg-transparent ${isMobileChatOpen ? 'block' : 'hidden md:flex'}`}>
         {activeContact ? (
           <ChatScreen 
             currentUser={currentUser} 

@@ -14,6 +14,9 @@ export interface Contact {
   createdAt: any;
   lastMessageAt: any;
   lastReadAt: any;
+  clearedAt?: any;
+  isBlocked?: boolean;
+  isDeleted?: boolean;
 }
 
 export interface Conversation {

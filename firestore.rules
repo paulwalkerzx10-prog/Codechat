@@ -28,9 +28,9 @@ service cloud.firestore {
              data.code is string && data.code.size() == 6 &&
              data.displayName is string && data.displayName.size() <= 128 &&
              data.createdAt is timestamp &&
-             (!data.keys().hasAny(['accentColor']) || (data.accentColor is string && data.accentColor.size() <= 32)) &&
-             (!data.keys().hasAny(['patternEnabled']) || (data.patternEnabled is bool)) &&
-             (!data.keys().hasAny(['patternStyle']) || (data.patternStyle is string && data.patternStyle.size() <= 32));
+             (!('accentColor' in data) || (data.accentColor is string && data.accentColor.size() <= 32)) &&
+             (!('patternEnabled' in data) || (data.patternEnabled is bool)) &&
+             (!('patternStyle' in data) || (data.patternStyle is string && data.patternStyle.size() <= 32));
     }
 
     match /users/{code} {
@@ -54,12 +54,14 @@ service cloud.firestore {
 
       function isValidContact(data) {
         return data.keys().hasAll(['code', 'displayName', 'createdAt', 'lastMessageAt', 'lastReadAt']) &&
-               data.keys().size() == 5 &&
                data.code is string && data.code.size() == 6 &&
                data.displayName is string && data.displayName.size() <= 128 &&
                data.createdAt is timestamp &&
                data.lastMessageAt is timestamp &&
-               data.lastReadAt is timestamp;
+               data.lastReadAt is timestamp &&
+               (!('clearedAt' in data) || data.clearedAt is timestamp) &&
+               (!('isBlocked' in data) || data.isBlocked is bool) &&
+               (!('isDeleted' in data) || data.isDeleted is bool);
       }
 
       match /contacts/{contactCode} {
@@ -73,9 +75,8 @@ service cloud.firestore {
         allow update: if isSignedIn() &&
                       isValidId(code) && isValidId(contactCode) &&
                       isUserOwner() &&
-                      incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'lastMessageAt', 'lastReadAt']) &&
-                      (incoming().displayName is string && incoming().displayName.size() <= 128) &&
-                      (incoming().lastMessageAt is timestamp) && (incoming().lastReadAt is timestamp);
+                      incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'lastMessageAt', 'lastReadAt', 'clearedAt', 'isBlocked', 'isDeleted']) &&
+                      isValidContact(incoming());
         allow delete: if isSignedIn() && isValidId(code) && isValidId(contactCode) && isUserOwner();
       }
     }

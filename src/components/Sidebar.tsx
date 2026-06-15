@@ -159,13 +159,23 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
         
         // Add to our contacts
         const newContactRef = doc(db, 'users', currentUser.code, 'contacts', cleanCode);
-        await setDoc(newContactRef, {
-          code: cleanCode,
-          displayName: otherUser.displayName || '',
-          createdAt: serverTimestamp(),
-          lastMessageAt: serverTimestamp(),
-          lastReadAt: serverTimestamp(),
-        });
+        const existingContactSnap = await getDoc(newContactRef);
+        if (existingContactSnap.exists()) {
+          await setDoc(newContactRef, {
+            isDeleted: false,
+            displayName: otherUser.displayName || '',
+            lastMessageAt: serverTimestamp(),
+            lastReadAt: serverTimestamp()
+          }, { merge: true });
+        } else {
+          await setDoc(newContactRef, {
+            code: cleanCode,
+            displayName: otherUser.displayName || '',
+            createdAt: serverTimestamp(),
+            lastMessageAt: serverTimestamp(),
+            lastReadAt: serverTimestamp(),
+          });
+        }
 
         setAddCode('');
         setIsAdding(false);
@@ -181,7 +191,7 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
   return (
     <div className="flex flex-col h-full bg-transparent relative">
       {isAdding ? (
-        <div className="absolute inset-0 z-10 bg-white flex flex-col h-full">
+        <div className="absolute inset-0 z-10 bg-white/90 backdrop-blur-md flex flex-col h-full">
           <div className="p-4 flex items-center justify-between border-b border-slate-100">
             <button onClick={() => { setIsAdding(false); setAddError(''); }} className="p-2 text-slate-800 hover:bg-slate-100 rounded-full">
               <X className="w-5 h-5" />
@@ -307,7 +317,7 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
       <div className="px-4 mb-4">
         <button 
           onClick={() => setIsAdding(true)}
-          className="w-full flex items-center gap-2 bg-white border border-slate-200 py-3 px-4 rounded-full text-slate-400 hover:bg-slate-50 transition-colors text-sm shadow-sm"
+          className="w-full flex items-center gap-2 bg-white/50 backdrop-blur-sm border border-slate-200 py-3 px-4 rounded-full text-slate-400 hover:bg-white/80 transition-colors text-sm shadow-sm"
         >
           <Search className="w-4 h-4" />
           <span>Search or Add by User Code</span>
