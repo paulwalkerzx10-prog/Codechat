@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Google AI Studio App</title>
+    <script>
+      // Prevent formdata-polyfill from attempting to write to read-only window.fetch.
+      (function() {
+        try {
+          const targets = [window, globalThis, self];
+          for (const target of targets) {
+            if (!target) continue;
+            
+            // Ensure FormData exists
+            if (typeof target.FormData === 'undefined') {
+              target.FormData = class FakeFormData {};
+            }
+            
+            // Ensure FormData.prototype exists
+            if (target.FormData && !target.FormData.prototype) {
+              target.FormData.prototype = {};
+            }
+            
+            const proto = target.FormData.prototype;
+            
+            // Define dummy methods for keys, values, entries, and Symbol.iterator if they don't exist
+            const emptyIterator = function() {
+              return {
+                next: () => ({ done: true, value: undefined }),
+                [Symbol.iterator]() { return this; }
+              };
+            };
+            
+            if (!proto.keys) proto.keys = emptyIterator;
+            if (!proto.values) proto.values = emptyIterator;
+            if (!proto.entries) proto.entries = emptyIterator;
+            if (!proto[Symbol.iterator]) proto[Symbol.iterator] = function() { return this.entries(); };
+          }
+        } catch (e) {
+          console.error("Fetch/FormData head patch failed:", e);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

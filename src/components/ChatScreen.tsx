@@ -1,0 +1,669 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { User, Contact, Message } from '../lib/types';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { collection, doc, query, orderBy, onSnapshot, setDoc, serverTimestamp, getDoc } from 'firebase/firestore';
+import { Send, ArrowLeft, Trash2, Shield, Lock, Plus, Smile, Mic, Paperclip, FileText, X, Download } from 'lucide-react';
+import { getAvatarColor, cn } from '../lib/utils';
+import { getTheme } from '../lib/theme';
+
+// Helper to compress images so they fit safely under Firestore document boundaries and size limits
+const compressImage = (dataUrl: string): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new window.Image();
+    img.src = dataUrl;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+      
+      const MAX_WIDTH = 500;
+      const MAX_HEIGHT = 500;
+      let width = img.width;
+      let height = img.height;
+      
+      if (width > height) {
+        if (width > MAX_WIDTH) {
+          height *= MAX_WIDTH / width;
+          width = MAX_WIDTH;
+        }
+      } else {
+        if (height > MAX_HEIGHT) {
+          width *= MAX_HEIGHT / height;
+          height = MAX_HEIGHT;
+        }
+      }
+      
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', 0.6)); // compressed to 60% quality jpeg
+    };
+    img.onerror = () => {
+      resolve(dataUrl);
+    };
+  });
+};
+
+const EMOJIS = [
+  '😀', '😂', '😍', '😊', '😎', '🤔', '😭', '👍', '🙌', '🔥',
+  '❤️', '✨', '💯', '🎉', '👏', '🥳', '💡', '🚀', '💬', '📍',
+  '👀', '🌟', '🧸', '🎁', '📅', '🔒', '🎵', '📸', '📎', '💻',
+  '😜', '🤩', '🍕', '☕', '🐱', '🌈', '⚡', '🛸', '🎈', '🤝'
+];
+
+interface ChatScreenProps {
+  currentUser: User;
+  contact: Contact;
+  onBack: () => void;
+  onRemoveContact: () => void;
+}
+
+export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: ChatScreenProps) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [isConvReady, setIsConvReady] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  const activeTheme = getTheme(currentUser.accentColor);
+
+  // States for Emojis & Attachments
+  const [selectedFile, setSelectedFile] = useState<{name: string, type: string, size: number, url: string} | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [selectedFileLoading, setSelectedFileLoading] = useState(false);
+  const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
+
+  // Voice recording states
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const getConversationId = (code1: string, code2: string) => {
+    return [code1, code2].sort().join('_');
+  };
+
+  const conversationId = getConversationId(currentUser.code, contact.code);
+
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setIsConvReady(false);
+    setSelectedFile(null);
+    setShowEmojiPicker(false);
+    
+    // Ensure Conversation document exists so rules allow messages
+    const ensureConversation = async () => {
+      const convRef = doc(db, 'conversations', conversationId);
+      let convExists = false;
+      try {
+        const convSnap = await getDoc(convRef);
+        convExists = convSnap.exists();
+      } catch (err) {
+        // If Permission Denied is thrown because the document doesn't exist yet
+        // and we are not in the existing UIDs list, we proceed to create it.
+        convExists = false;
+      }
+
+      if (!convExists) {
+        try {
+          const userContactRef = doc(db, 'users', contact.code);
+          const userContactSnap = await getDoc(userContactRef);
+          const contactUid = userContactSnap.exists() ? (userContactSnap.data() as User).uid : '';
+          
+          if (!contactUid) {
+            setIsConvReady(true);
+            return; // Can't establish if we don't know their uid (shouldn't happen)
+          }
+
+          await setDoc(convRef, {
+            id: conversationId,
+            uids: [currentUser.uid, contactUid],
+            codes: [currentUser.code, contact.code],
+            createdAt: serverTimestamp()
+          });
+        } catch (err) {
+          console.error("Could not ensure conversation", err);
+        }
+      }
+      setIsConvReady(true);
+    };
+    ensureConversation();
+  }, [conversationId, currentUser.uid, contact.code]);
+
+  useEffect(() => {
+    if (!isConvReady) return;
+
+    const q = query(
+      collection(db, 'conversations', conversationId, 'messages'),
+      orderBy('timestamp', 'asc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs: Message[] = [];
+      snapshot.forEach(d => msgs.push(d.data() as Message));
+      setMessages(msgs);
+      
+      // Update last read of this contact
+      if (msgs.length > 0) {
+        setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
+           lastReadAt: serverTimestamp()
+         }, { merge: true }).catch(console.error);
+      }
+
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `conversations/${conversationId}/messages`);
+    });
+
+    return () => unsubscribe();
+  }, [conversationId, isConvReady, currentUser.code, contact.code]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setSelectedFileLoading(true);
+
+    if (file.size > 2500000) { 
+      alert("Attachment size exceeds limits. Please select a file smaller than 2MB.");
+      setSelectedFileLoading(false);
+      return;
+    }
+
+    try {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        let base64Url = event.target?.result as string;
+        
+        // If it is an image, let's auto-compress to prevent exceeding Firestore sizes
+        if (file.type.startsWith('image/')) {
+          base64Url = await compressImage(base64Url);
+        }
+
+        setSelectedFile({
+          name: file.name,
+          type: file.type,
+          size: Math.round(base64Url.length * 0.75),
+          url: base64Url
+        });
+        setSelectedFileLoading(false);
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error("Error loading file attachment:", err);
+      setSelectedFileLoading(false);
+    }
+  };
+
+  const startVoiceRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        stream.getTracks().forEach(track => track.stop());
+
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = () => {
+          const base64Url = reader.result as string;
+          setSelectedFile({
+            name: `AudioRecording-${Date.now()}.webm`,
+            type: 'audio/webm',
+            size: audioBlob.size,
+            url: base64Url
+          });
+        };
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds(prev => prev + 1);
+      }, 1000);
+    } catch (err) {
+      console.error("Error starting microphone recording:", err);
+      alert("Could not start audio notes. Please check microphone permission setup.");
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+    }
+  };
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = inputText.trim();
+    if (!text && !selectedFile) return;
+
+    setIsSending(true);
+    setInputText('');
+    const fileToSend = selectedFile;
+    setSelectedFile(null);
+    setShowEmojiPicker(false);
+
+    try {
+      const messageId = crypto.randomUUID ? crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
+      const msgDoc = doc(db, 'conversations', conversationId, 'messages', messageId);
+      
+      const payload: any = {
+        id: messageId,
+        senderCode: currentUser.code,
+        text: text || `[Sent attachment: ${fileToSend?.name || 'file'}]`,
+        timestamp: serverTimestamp()
+      };
+
+      if (fileToSend) {
+        payload.attachment = fileToSend;
+      }
+
+      await setDoc(msgDoc, payload);
+
+      // Update lastMessageAt on our contact
+      await setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
+        lastMessageAt: serverTimestamp()
+      }, { merge: true });
+
+    } catch (err) {
+      console.error("Failed to deliver message:", err);
+      // Restore states if failed
+      if (text) setInputText(text);
+      if (fileToSend) setSelectedFile(fileToSend);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    if (!window.confirm('Remove this contact?')) return;
+    try {
+      const { deleteDoc } = await import('firebase/firestore');
+      await deleteDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code));
+      onRemoveContact();
+    } catch(err) {
+      console.error(err);
+    }
+  };
+
+  const name = contact.displayName || contact.code;
+
+  return (
+    <div className="flex flex-col h-full bg-transparent relative">
+      {/* Hidden File Picker Input */}
+      <input 
+        type="file" 
+        onChange={handleFileChange} 
+        ref={fileInputRef} 
+        className="hidden" 
+        accept="image/*,audio/*,application/pdf,text/*"
+      />
+
+      {/* Header */}
+      <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-white pt-6">
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={onBack}
+            className="md:hidden p-2 -ml-2 text-slate-800 hover:bg-slate-50 transition-colors rounded-full"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          
+          <div 
+            className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm"
+            style={{ backgroundColor: getAvatarColor(contact.code) }}
+          >
+            {contact.code.substring(0, 2)}
+          </div>
+          <div>
+            <h2 className="font-bold text-slate-900">{name}</h2>
+            <div className="text-[10px] font-semibold text-emerald-500">Online</div>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={handleRemove}
+            className="p-2 text-slate-400 hover:text-red-500 transition-colors rounded-full hover:bg-slate-50"
+            title="Remove contact"
+          >
+            <Trash2 className="w-5 h-5" />
+          </button>
+          <div className={`w-8 h-8 flex items-center justify-center ${activeTheme.textAccent} ${activeTheme.bgLight} rounded-full`}>
+            <Shield className="w-4 h-4" />
+          </div>
+        </div>
+      </div>
+
+      {/* Messages Scroll Area */}
+      <div 
+        className="flex-1 overflow-y-auto p-4 space-y-6 pb-32 scrollbar-hide transition-all duration-300 bg-transparent"
+      >
+        <div className={`bg-white/80 backdrop-blur-sm border border-black/[0.03] rounded-2xl p-4 flex gap-3 mx-auto max-w-[300px]`}>
+          <Lock className={`w-5 h-5 ${activeTheme.textAccent} flex-shrink-0 mt-0.5`} />
+          <div>
+            <p className={`text-sm font-semibold ${activeTheme.textDark}`}>End-to-end encrypted</p>
+            <p className={`text-xs ${activeTheme.textAccent} mt-1 leading-relaxed`}>
+              No one outside this chat can read or listen to messages.
+            </p>
+          </div>
+        </div>
+
+        {messages.length === 0 ? (
+          <div className="text-center text-slate-400 text-sm py-4">
+            Today
+          </div>
+        ) : (
+          <>
+            <div className="text-center text-slate-400 text-xs font-medium py-2">Today</div>
+            {messages.map((msg, i) => {
+              const isMe = msg.senderCode === currentUser.code;
+              const timeStr = msg.timestamp ? new Date(msg.timestamp.toMillis()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...';
+              
+              return (
+                <div key={msg.id || i} className={cn("flex flex-col max-w-[80%] mb-2", isMe ? "ml-auto items-end" : "mr-auto items-start")}>
+                  
+                  {/* Attached File Visualizer */}
+                  {msg.attachment && (
+                    <div className="mb-1.5 max-w-sm">
+                      {msg.attachment.type.startsWith('image/') ? (
+                        <div className="border border-slate-100 rounded-2xl overflow-hidden shadow-sm max-w-[260px] bg-slate-50">
+                          <img 
+                            src={msg.attachment.url} 
+                            alt={msg.attachment.name} 
+                            ref={(el) => {
+                              if (el) el.referrerPolicy = "no-referrer";
+                            }}
+                            className="max-h-60 max-w-full object-cover cursor-pointer hover:opacity-90 active:scale-95 transition-transform"
+                            onClick={() => setZoomImageUrl(msg.attachment!.url)}
+                          />
+                        </div>
+                      ) : msg.attachment.type.startsWith('audio/') ? (
+                        <div className={cn(
+                          "p-3 rounded-2xl flex flex-col gap-2 shadow-sm border",
+                          isMe ? cn(activeTheme.bgLight, "bg-opacity-90 border-opacity-70", activeTheme.bgLightBorder) : "bg-slate-100/90 border-slate-200"
+                        )}>
+                          <div className="flex items-center gap-2">
+                            <Mic className={cn("w-4 h-4 animate-pulse", activeTheme.textAccent)} />
+                            <span className="text-xs font-semibold text-slate-700">Voice clip</span>
+                          </div>
+                          <audio src={msg.attachment.url} controls className="max-w-[240px] focus:outline-none" />
+                        </div>
+                      ) : (
+                        <div className={cn(
+                          "p-3 rounded-2xl flex items-center gap-3 border shadow-sm",
+                          isMe 
+                            ? cn(activeTheme.bgAccent, "bg-opacity-95 border-opacity-100 border", activeTheme.bgBorder, "text-white") 
+                            : "bg-slate-50 border-slate-200 text-slate-800"
+                        )}>
+                          <div className={cn("p-2 rounded-xl flex-shrink-0", isMe ? "bg-white/15" : cn(activeTheme.bgLight, activeTheme.textAccent))}>
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-bold truncate max-w-[140px]">{msg.attachment.name}</p>
+                            <p className="text-[10px] opacity-75">{(msg.attachment.size / 1024).toFixed(1)} KB</p>
+                          </div>
+                          <a 
+                            href={msg.attachment.url} 
+                            download={msg.attachment.name}
+                            className={cn(
+                              "p-2 rounded-full flex-shrink-0 hover:bg-black/10 transition-colors",
+                              isMe ? "text-white" : activeTheme.textAccent
+                            )}
+                          >
+                            <Download className="w-4 h-4" />
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div 
+                    className={cn(
+                      "px-4 py-3 text-[15px] shadow-sm",
+                      isMe 
+                        ? cn(activeTheme.bgAccent, "text-white rounded-2xl rounded-tr-sm") 
+                        : "bg-slate-100 text-slate-900 rounded-2xl rounded-tl-sm"
+                    )}
+                  >
+                    {msg.text}
+                  </div>
+                  <span className={cn("text-[10px] mt-1 px-1", isMe ? cn(activeTheme.textLight, "mr-1") : "text-slate-400 ml-1")}>
+                    {timeStr} {isMe && <span className="ml-1 inline-block">✓✓</span>}
+                  </span>
+                </div>
+              );
+            })}
+          </>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Floating Emojis Menu popover */}
+      {showEmojiPicker && (
+        <div className="absolute bottom-[85px] left-4 right-4 z-40 bg-white border border-slate-200 rounded-2xl shadow-xl p-4 max-h-[220px] overflow-y-auto">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Select Emoji</span>
+            <button 
+              type="button" 
+              onClick={() => setShowEmojiPicker(false)}
+              className="text-slate-400 hover:text-red-500 rounded-full hover:bg-slate-50 p-1 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="grid grid-cols-8 gap-2">
+            {EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => {
+                  setInputText(prev => prev + emoji);
+                }}
+                className="text-2xl p-2 hover:bg-slate-50 hover:scale-110 active:scale-95 rounded-xl transition-all text-center flex items-center justify-center cursor-pointer"
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Selected/Active File Attachment Preview Header */}
+      {selectedFile && (
+        <div className="absolute bottom-[72px] left-0 w-full px-4 py-2 border-t border-slate-100 bg-slate-50 flex items-center justify-between gap-3 animate-fade-in z-30 shadow-inner">
+          <div className="flex items-center gap-3 overflow-hidden">
+            {selectedFile.type.startsWith('image/') ? (
+              <img 
+                src={selectedFile.url} 
+                alt="Preview" 
+                ref={(el) => {
+                  if (el) el.referrerPolicy = "no-referrer";
+                }}
+                className="w-10 h-10 object-cover rounded-lg border border-slate-200"
+              />
+            ) : selectedFile.type.startsWith('audio/') ? (
+              <div className={`w-10 h-10 flex items-center justify-center ${activeTheme.bgLight} ${activeTheme.textAccent} rounded-lg`}>
+                <Mic className="w-5 h-5 animate-pulse" />
+              </div>
+            ) : (
+              <div className={`w-10 h-10 flex items-center justify-center ${activeTheme.bgLight} ${activeTheme.textAccent} rounded-lg`}>
+                <FileText className="w-5 h-5" />
+              </div>
+            )}
+            <div className="min-w-0 overflow-hidden">
+              <p className="text-xs font-semibold text-slate-800 truncate max-w-[200px]">{selectedFile.name}</p>
+              <p className="text-[10px] text-slate-500">{(selectedFile.size / 1024).toFixed(1)} KB</p>
+            </div>
+          </div>
+          
+          <button 
+            type="button" 
+            onClick={() => setSelectedFile(null)}
+            className="p-1 text-slate-400 hover:text-red-500 hover:bg-slate-100 rounded-full transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+      )}
+
+      {selectedFileLoading && (
+        <div className="absolute bottom-[72px] left-0 w-full px-4 py-2 border-t border-slate-100 bg-slate-50 text-xs text-slate-500 animate-pulse z-30">
+          Generating file preview details...
+        </div>
+      )}
+
+      {/* Input Action Form */}
+      <div className="absolute bottom-0 w-full p-4 bg-white border-t border-slate-100 pb-safe">
+        <form onSubmit={handleSend} className="flex items-center gap-3">
+          
+          {/* File attachment toggle */}
+          <button 
+            type="button" 
+            onClick={() => fileInputRef.current?.click()}
+            className={`w-10 h-10 flex items-center justify-center text-slate-500 ${activeTheme.hoverTextAccent} hover:bg-slate-50 transition-colors rounded-full flex-shrink-0`}
+            title="Attach a file"
+          >
+            <Paperclip className="w-5.5 h-5.5" />
+          </button>
+          
+          {isRecording ? (
+            <div className={`flex-1 ${activeTheme.bgLight} border ${activeTheme.bgLightBorder} rounded-full flex items-center justify-between px-4 py-1.5 min-h-[44px]`}>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
+                <span className={`text-xs font-semibold ${activeTheme.textDark}`}>
+                  Recording note: {Math.floor(recordingSeconds / 60)}:{(recordingSeconds % 60).toString().padStart(2, '0')}
+                </span>
+              </div>
+              <button 
+                type="button" 
+                onClick={stopVoiceRecording}
+                className={`text-xs font-bold ${activeTheme.textAccent} hover:text-white ${activeTheme.bgHover} transition-all duration-200 ${activeTheme.bgLight} px-3 py-1 rounded-full border ${activeTheme.bgLightBorder}`}
+              >
+                Send
+              </button>
+            </div>
+          ) : (
+            <div className="flex-1 bg-slate-50 border border-slate-200 rounded-full flex items-center pr-2 py-1">
+              <input
+                type="text"
+                value={inputText}
+                onChange={e => setInputText(e.target.value)}
+                placeholder="Type a message..."
+                className="flex-1 bg-transparent px-4 py-2 text-[15px] text-slate-900 focus:outline-none placeholder:text-slate-400"
+              />
+              
+              {/* Emoji Open toggle */}
+              <button 
+                type="button" 
+                onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                className={cn(
+                  "w-8 h-8 rounded-full flex items-center justify-center transition-colors flex-shrink-0 mr-1",
+                  showEmojiPicker ? `${activeTheme.textAccent} ${activeTheme.bgLight}` : "text-slate-400 hover:text-slate-600"
+                )}
+                title="Choose emojis"
+              >
+                <Smile className="w-5 h-5" />
+              </button>
+
+              {/* Send Button */}
+              {(inputText.trim() || selectedFile) && (
+                <button
+                  type="submit"
+                  disabled={isSending}
+                  className={`w-8 h-8 rounded-full ${activeTheme.bgAccent} ${activeTheme.bgHover} text-white flex items-center justify-center transition-colors flex-shrink-0`}
+                >
+                  <Send className="w-4 h-4 ml-0.5" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Voice clips Recording Button */}
+          {!isRecording ? (
+            <button 
+              type="button" 
+              onClick={startVoiceRecording}
+              className={`w-10 h-10 flex items-center justify-center ${activeTheme.bgAccent} ${activeTheme.bgHover} text-white hover:scale-105 active:scale-95 transition-all rounded-full flex-shrink-0 shadow-sm ${activeTheme.shadowAccent}`}
+              title="Record voice note"
+            >
+              <Mic className="w-5 h-5" />
+            </button>
+          ) : (
+            <button 
+              type="button" 
+              onClick={() => {
+                // Cancel recording
+                if (mediaRecorderRef.current) {
+                  mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+                }
+                setIsRecording(false);
+                if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+              }}
+              className="w-10 h-10 flex items-center justify-center bg-red-500 text-white hover:bg-red-600 transition-colors rounded-full flex-shrink-0"
+              title="Cancel recording"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
+        </form>
+      </div>
+
+      {/* Image zoom Modal overlay */}
+      {zoomImageUrl && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center p-4"
+          onClick={() => setZoomImageUrl(null)}
+        >
+          <button 
+            type="button" 
+            onClick={() => setZoomImageUrl(null)}
+            className="absolute top-6 right-6 text-white bg-white/10 hover:bg-white/20 p-2 rounded-full transition-colors cursor-pointer"
+          >
+            <X className="w-6 h-6" />
+          </button>
+          
+          <img 
+            src={zoomImageUrl} 
+            alt="Zoomed document" 
+            ref={(el) => {
+              if (el) el.referrerPolicy = "no-referrer";
+            }}
+            className="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl animate-scale-up"
+          />
+        </div>
+      )}
+    </div>
+  );
+}

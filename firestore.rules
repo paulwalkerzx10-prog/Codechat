@@ -1,0 +1,138 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
+    }
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'code', 'displayName', 'createdAt']) &&
+             data.keys().hasOnly(['uid', 'code', 'displayName', 'createdAt', 'accentColor', 'patternEnabled', 'patternStyle']) &&
+             data.uid is string && data.uid.size() <= 128 && data.uid == request.auth.uid &&
+             data.code is string && data.code.size() == 6 &&
+             data.displayName is string && data.displayName.size() <= 128 &&
+             data.createdAt is timestamp &&
+             (!data.keys().hasAny(['accentColor']) || (data.accentColor is string && data.accentColor.size() <= 32)) &&
+             (!data.keys().hasAny(['patternEnabled']) || (data.patternEnabled is bool)) &&
+             (!data.keys().hasAny(['patternStyle']) || (data.patternStyle is string && data.patternStyle.size() <= 32));
+    }
+
+    match /users/{code} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+                    isValidId(code) &&
+                    isValidUser(incoming()) &&
+                    incoming().createdAt == request.time &&
+                    incoming().code == code;
+      allow update: if isSignedIn() &&
+                    isValidId(code) &&
+                    existing().uid == request.auth.uid &&
+                    incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'accentColor', 'patternEnabled', 'patternStyle']) &&
+                    isValidUser(incoming());
+      
+      function isUserOwner() {
+        // Can't use existing() effectively in create, use get to check owner
+        return exists(/databases/$(database)/documents/users/$(code)) &&
+               get(/databases/$(database)/documents/users/$(code)).data.uid == request.auth.uid;
+      }
+
+      function isValidContact(data) {
+        return data.keys().hasAll(['code', 'displayName', 'createdAt', 'lastMessageAt', 'lastReadAt']) &&
+               data.keys().size() == 5 &&
+               data.code is string && data.code.size() == 6 &&
+               data.displayName is string && data.displayName.size() <= 128 &&
+               data.createdAt is timestamp &&
+               data.lastMessageAt is timestamp &&
+               data.lastReadAt is timestamp;
+      }
+
+      match /contacts/{contactCode} {
+        allow read: if isSignedIn() && isUserOwner();
+        allow create: if isSignedIn() &&
+                      isValidId(code) && isValidId(contactCode) &&
+                      isUserOwner() &&
+                      isValidContact(incoming()) &&
+                      incoming().createdAt == request.time &&
+                      incoming().code == contactCode;
+        allow update: if isSignedIn() &&
+                      isValidId(code) && isValidId(contactCode) &&
+                      isUserOwner() &&
+                      incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'lastMessageAt', 'lastReadAt']) &&
+                      (incoming().displayName is string && incoming().displayName.size() <= 128) &&
+                      (incoming().lastMessageAt is timestamp) && (incoming().lastReadAt is timestamp);
+        allow delete: if isSignedIn() && isValidId(code) && isValidId(contactCode) && isUserOwner();
+      }
+    }
+
+    function isValidConversation(data) {
+      return data.keys().hasAll(['id', 'uids', 'codes', 'createdAt']) &&
+             data.keys().size() == 4 &&
+             data.id is string && data.id.size() <= 128 &&
+             data.uids is list && data.uids.size() == 2 &&
+             data.uids[0] is string && data.uids[1] is string &&
+             data.codes is list && data.codes.size() == 2 &&
+             data.codes[0] is string && data.codes[1] is string &&
+             data.createdAt is timestamp;
+    }
+
+    function isParticipant(conversationId) {
+      return exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+             request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.uids;
+    }
+
+    match /conversations/{conversationId} {
+      allow read: if isSignedIn() && request.auth.uid in existing().uids;
+      allow create: if isSignedIn() &&
+                    isValidId(conversationId) &&
+                    isValidConversation(incoming()) &&
+                    request.auth.uid in incoming().uids &&
+                    incoming().createdAt == request.time &&
+                    incoming().id == conversationId;
+
+      function isValidMessage(data) {
+        return data.keys().hasAll(['id', 'senderCode', 'text', 'timestamp']) &&
+               (data.keys().size() == 4 || 
+                (data.keys().size() == 5 && 
+                 data.keys().hasAll(['attachment']) && 
+                 data.attachment.keys().hasAll(['name', 'type', 'size', 'url']) &&
+                 data.attachment.keys().size() == 4 &&
+                 data.attachment.name is string && data.attachment.name.size() <= 256 &&
+                 data.attachment.type is string && data.attachment.type.size() <= 128 &&
+                 (data.attachment.size is int || data.attachment.size is float) &&
+                 data.attachment.url is string && data.attachment.url.size() <= 1048576)) &&
+               data.id is string && data.id.size() <= 128 &&
+               data.senderCode is string && data.senderCode.size() == 6 &&
+               data.text is string && data.text.size() <= 10000 &&
+               data.timestamp is timestamp;
+      }
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn() &&
+                    isValidId(conversationId) &&
+                    (!exists(/databases/$(database)/documents/conversations/$(conversationId)) || isParticipant(conversationId));
+        allow create: if isSignedIn() &&
+                      isValidId(conversationId) && isValidId(messageId) &&
+                      isParticipant(conversationId) &&
+                      isValidMessage(incoming()) &&
+                      incoming().timestamp == request.time &&
+                      incoming().id == messageId;
+      }
+    }
+  }
+}
