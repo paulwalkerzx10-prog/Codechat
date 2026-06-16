@@ -9,17 +9,25 @@ interface LoginScreenProps {
 
 export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const [isLogin, setIsLogin] = useState(true);
-  const [username, setUsername] = useState('');
+  const [loginCode, setLoginCode] = useState('');
   const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password.trim()) {
-      setError("Please enter a username and password.");
+    
+    if (isLogin && (!loginCode.trim() || !password.trim())) {
+      setError("Please enter your connection code and password.");
       return;
     }
+    
+    if (!isLogin && (!displayName.trim() || !password.trim())) {
+      setError("Please enter a display name and password.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -29,15 +37,15 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         const { data, error: fetchError } = await supabase
           .from('users')
           .select('*')
-          .eq('username', username)
+          .eq('code', loginCode.trim().toUpperCase())
           .eq('password', password)
           .single();
           
         if (fetchError) {
            if (fetchError.code === 'PGRST116') {
-             setError("Invalid username or password.");
-           } else if (fetchError.message?.includes('column "username" does not exist') || fetchError.message?.includes('column "password" does not exist')) {
-             setError("Database schema update required. Please run the SQL command provided in the setup instructions to add username and password columns.");
+             setError("Invalid connection code or password.");
+           } else if (fetchError.message?.toLowerCase().includes('schema cache') || fetchError.message?.includes('column "password" does not exist')) {
+             setError("Database requires an update. Please run: ALTER TABLE public.users ADD COLUMN password text;");
            } else {
              setError(fetchError.message);
            }
@@ -50,30 +58,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         }
       } else {
         // Sign Up Flow
-        // Check if username exists
-        const { data: existingUser, error: checkError } = await supabase
-          .from('users')
-          .select('id, username')
-          .eq('username', username)
-          .maybeSingle();
-          
-        if (checkError && checkError.code !== 'PGRST116' && !checkError.message?.includes('does not exist')) {
-           setError(checkError.message);
-           setLoading(false);
-           return;
-        } else if (checkError?.message?.includes('column "username" does not exist') || checkError?.message?.includes('column "password" does not exist')) {
-           setError("Database schema update required. Please run the SQL command provided in the setup instructions in Supabase SQL editor: ALTER TABLE public.users ADD COLUMN username text UNIQUE, ADD COLUMN password text;");
-           setLoading(false);
-           return;
-        }
-        
-        if (existingUser) {
-           setError("Username is already taken.");
-           setLoading(false);
-           return;
-        }
-
-        // Generate unused code
+        // Generate unused connection code
         let newCode = generateCode();
         let isTaken = true;
         while (isTaken) {
@@ -82,9 +67,9 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
              throw codeCheckError;
           }
           if (!checkCodeSnap) {
-            isTaken = false;
+             isTaken = false;
           } else {
-            newCode = generateCode();
+             newCode = generateCode();
           }
         }
 
@@ -98,8 +83,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         const newUser = {
           uid: fallbackUid,
           code: newCode,
-          display_name: username, // Use username as initial display name
-          username: username,
+          display_name: displayName.trim(),
           password: password,
           accent_color: 'violet',
           pattern_enabled: true,
@@ -108,8 +92,8 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 
         const { error: insertError } = await supabase.from('users').insert([newUser]);
         if (insertError) {
-           if (insertError.message?.includes('column "username" does not exist') || insertError.message?.includes('column "password" does not exist')) {
-             setError("Database schema update required. Please run the SQL command provided in the instructions in Supabase SQL editor: ALTER TABLE public.users ADD COLUMN username text UNIQUE, ADD COLUMN password text;");
+           if (insertError.message?.toLowerCase().includes('schema cache') || insertError.message?.includes('column "password" does not exist')) {
+             setError("Database requires an update. Please run: ALTER TABLE public.users ADD COLUMN password text;");
            } else {
              setError(insertError.message);
            }
@@ -153,25 +137,43 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
               className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors z-10 ${!isLogin ? 'bg-violet-600 shadow-md text-white' : 'text-violet-200 hover:text-white'}`}
               onClick={() => { setIsLogin(false); setError(null); }}
             >
-              Initialize New
+              Sign Up
             </button>
           </div>
 
           <form onSubmit={handleSubmit} className="flex flex-col gap-4 text-left">
-            <div>
-              <label className="block text-sm font-medium text-violet-200 mb-1 ml-1" htmlFor="username">Username</label>
-              <div className="relative">
-                 <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-violet-400" />
-                 <input 
-                   id="username"
-                   type="text" 
-                   value={username}
-                   onChange={e => setUsername(e.target.value)}
-                   className="w-full bg-black/20 border border-white/10 text-white placeholder-violet-300/50 rounded-xl py-3 pl-10 pr-4 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all"
-                   placeholder="Your unique handle"
-                 />
+            {isLogin ? (
+              <div>
+                <label className="block text-sm font-medium text-violet-200 mb-1 ml-1" htmlFor="loginCode">Connection Code</label>
+                <div className="relative">
+                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-violet-400" />
+                   <input 
+                     id="loginCode"
+                     type="text" 
+                     value={loginCode}
+                     onChange={e => setLoginCode(e.target.value)}
+                     maxLength={6}
+                     className="w-full bg-black/20 border border-white/10 text-white placeholder-violet-300/50 rounded-xl py-3 pl-10 pr-4 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all uppercase"
+                     placeholder="e.g. ABCDEF"
+                   />
+                </div>
               </div>
-            </div>
+            ) : (
+              <div>
+                <label className="block text-sm font-medium text-violet-200 mb-1 ml-1" htmlFor="displayName">Display Name</label>
+                <div className="relative">
+                   <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-violet-400" />
+                   <input 
+                     id="displayName"
+                     type="text" 
+                     value={displayName}
+                     onChange={e => setDisplayName(e.target.value)}
+                     className="w-full bg-black/20 border border-white/10 text-white placeholder-violet-300/50 rounded-xl py-3 pl-10 pr-4 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all"
+                     placeholder="What should we call you?"
+                   />
+                </div>
+              </div>
+            )}
             
             <div>
               <label className="block text-sm font-medium text-violet-200 mb-1 ml-1" htmlFor="password">Password</label>
@@ -201,7 +203,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
               className="w-full py-3.5 bg-violet-600 hover:bg-violet-500 text-white rounded-xl font-semibold shadow-lg transition-all mt-4 flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {loading && <Loader2 className="w-5 h-5 animate-spin" />}
-              {isLogin ? "Access CodeChat" : "Create Account & Get Code"}
+              {isLogin ? "Sign In" : "Sign Up & Get Code"}
             </button>
           </form>
         </div>
