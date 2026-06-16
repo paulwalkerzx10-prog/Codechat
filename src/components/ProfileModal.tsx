@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { User } from '../lib/types';
-import { db } from '../lib/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { X, Copy, Check, Palette, Sparkles, Sliders } from 'lucide-react';
 import { THEMES, AccentColor, getTheme, DEFAULT_ACCENT } from '../lib/theme';
 
@@ -42,12 +41,12 @@ export function ProfileModal({ currentUser, onClose }: ProfileModalProps) {
     e.preventDefault();
     setSaving(true);
     try {
-      await setDoc(doc(db, 'users', currentUser.code), {
-        displayName: displayName.trim(),
-        accentColor,
-        patternEnabled,
-        patternStyle
-      }, { merge: true });
+      await supabase.from('users').update({
+        display_name: displayName.trim(),
+        accent_color: accentColor,
+        pattern_enabled: patternEnabled,
+        pattern_style: patternStyle
+      }).eq('code', currentUser.code);
       onClose();
     } catch (err) {
       console.error(err);

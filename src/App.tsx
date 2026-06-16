@@ -1,7 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
-import { collection, query, where, getDocs, doc, setDoc, getDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
+import { supabase, supabaseValidationError } from './lib/supabase';
 import { generateCode } from './lib/utils';
 import { MainLayout } from './components/MainLayout';
 import { Loader2, MessageSquare, Shield, Lock, User as UserIcon } from 'lucide-react';
@@ -10,133 +8,140 @@ import { User } from './lib/types';
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(supabaseValidationError);
   const [authHint, setAuthHint] = useState<string | null>(null);
   const [hasStarted, setHasStarted] = useState(false);
+  const isSupabaseConfigured = Boolean(!supabaseValidationError);
 
   useEffect(() => {
-    // If we have a code, we can auto-start
     const existingCode = localStorage.getItem('relay_code');
-    if (existingCode) {
-      setHasStarted(false); // Wait for auth state
+    if (existingCode && isSupabaseConfigured) {
+      setHasStarted(true);
     } else {
       setLoading(false);
     }
-  }, []);
+  }, [isSupabaseConfigured]);
 
   useEffect(() => {
-    let unsubUserDoc: (() => void) | null = null;
+    let subscription: any = null;
 
-    const initAuth = async (fbUser: FirebaseUser) => {
+    const initAuth = async () => {
+      if (!hasStarted) return;
+      if (supabaseValidationError) {
+        setError(supabaseValidationError);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+
       try {
         let code = localStorage.getItem('relay_code');
         let resolvedCode = '';
         
         if (code) {
-          const userSnap = await getDoc(doc(db, 'users', code));
-          if (userSnap.exists() && userSnap.data().uid === fbUser.uid) {
+          const { data: userSnap, error: fetchError } = await supabase.from('users').select('*').eq('code', code).single();
+          if (fetchError && fetchError.code !== 'PGRST116') {
+             throw fetchError;
+          }
+          if (userSnap) {
             resolvedCode = code;
           }
         } 
         
         if (!resolvedCode) {
-          const q = query(collection(db, 'users'), where('uid', '==', fbUser.uid));
-          const querySnapshot = await getDocs(q);
-          if (!querySnapshot.empty) {
-            resolvedCode = querySnapshot.docs[0].id;
-            localStorage.setItem('relay_code', resolvedCode);
-          }
-        }
-
-        if (!resolvedCode) {
           let newCode = code || generateCode();
           let isTaken = true;
           
           while (isTaken) {
-            const checkSnap = await getDoc(doc(db, 'users', newCode));
-            if (!checkSnap.exists()) {
+            const { data: checkSnap, error: checkError } = await supabase.from('users').select('code').eq('code', newCode).single();
+            if (checkError && checkError.code !== 'PGRST116') {
+               throw checkError;
+            }
+            if (!checkSnap) {
               isTaken = false;
             } else {
               newCode = generateCode();
             }
           }
 
-          const newUser: User = {
-            uid: fbUser.uid,
+          const fallbackUid = typeof crypto !== 'undefined' && crypto.randomUUID 
+            ? crypto.randomUUID() 
+            : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+              });
+
+          const newUser = {
+            uid: fallbackUid,
             code: newCode,
-            displayName: fbUser.displayName || '',
-            createdAt: serverTimestamp(),
-            accentColor: 'violet',
-            patternEnabled: true,
-            patternStyle: 'dots'
+            display_name: `User ${newCode}`,
+            accent_color: 'violet',
+            pattern_enabled: true,
+            pattern_style: 'dots'
           };
 
-          await setDoc(doc(db, 'users', newCode), newUser);
+          const { error: insertError } = await supabase.from('users').insert([newUser]);
+          if (insertError) throw insertError;
+          
           resolvedCode = newCode;
           localStorage.setItem('relay_code', newCode);
         }
 
-        if (unsubUserDoc) {
-          unsubUserDoc();
+        // Subscribe to user updates
+        const channelId = `public:users:code=eq.${resolvedCode}-${Date.now()}`;
+        subscription = supabase.channel(channelId)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'users', filter: `code=eq.${resolvedCode}` }, payload => {
+            if (payload.new) {
+              const u = payload.new as any;
+              setUser({
+                uid: u.uid,
+                code: u.code,
+                displayName: u.display_name,
+                createdAt: u.created_at,
+                accentColor: u.accent_color,
+                patternEnabled: u.pattern_enabled,
+                patternStyle: u.pattern_style
+              });
+            }
+          })
+          .subscribe();
+
+        // Initial fetch
+        const { data: u, error: initFetchError } = await supabase.from('users').select('*').eq('code', resolvedCode).single();
+        if (initFetchError) throw initFetchError;
+        
+        if (u) {
+          setUser({
+            uid: u.uid,
+            code: u.code,
+            displayName: u.display_name,
+            createdAt: u.created_at,
+            accentColor: u.accent_color,
+            patternEnabled: u.pattern_enabled,
+            patternStyle: u.pattern_style
+          });
         }
 
-        unsubUserDoc = onSnapshot(doc(db, 'users', resolvedCode), (snapshot) => {
-          if (snapshot.exists()) {
-            setUser(snapshot.data() as User);
-          }
-          setLoading(false);
-          setHasStarted(true);
-        }, (error) => {
-          console.error("User doc subscription error:", error);
-          setError("Failed to subscribe to user updates.");
-          setLoading(false);
-        });
+        setLoading(false);
 
       } catch (err: any) {
         console.error("Auth init error", err);
-        setError("Failed to initialize user session.");
+        setError(err.message || "Failed to initialize user session.");
         setLoading(false);
       }
     };
 
-    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
-      if (fbUser) {
-        initAuth(fbUser);
-      } else {
-        if (unsubUserDoc) {
-          unsubUserDoc();
-          unsubUserDoc = null;
-        }
-        setUser(null);
-        setLoading(false);
-      }
-    });
+    initAuth();
 
     return () => {
-      unsubscribe();
-      if (unsubUserDoc) unsubUserDoc();
-    };
-  }, []);
-
-  const handleGoogleSignIn = async () => {
-    setLoading(true);
-    setAuthHint(null);
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (err: any) {
-      console.error("Sign in failed", err);
-      if (err.code === 'auth/popup-closed-by-user') {
-        setAuthHint("Sign in was cancelled. You may need to click 'Sign in with Google' again or open the app in a new tab if popups are blocked.");
-        setError(null);
-      } else if (err.code === 'auth/popup-blocked') {
-        setAuthHint("Your browser blocked the sign-in popup. Please open the app in a new tab or allow popups.");
-        setError(null);
-      } else {
-        setError(err.message || "Failed to sign in with Google.");
+      if (subscription) {
+        supabase.removeChannel(subscription);
       }
-      setLoading(false);
-    }
+    };
+  }, [hasStarted]);
+
+  const handleStart = () => {
+    setHasStarted(true);
   };
 
   if (error) {
@@ -204,10 +209,10 @@ export default function App() {
           )}
 
           <button 
-            onClick={handleGoogleSignIn} 
+            onClick={handleStart} 
             className="w-full py-4 bg-violet-500 hover:bg-violet-400 text-white rounded-2xl font-semibold shadow-lg transition-all"
           >
-            Sign in with Google
+            Start Connection
           </button>
         </div>
       </div>

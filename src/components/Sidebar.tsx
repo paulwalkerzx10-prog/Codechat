@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Contact, Message } from '../lib/types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { doc, getDoc, setDoc, serverTimestamp, query, collection, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { Search, Plus, Shield, User as UserIcon, X, Copy, MessageCircle, ScanLine, Send, QrCode, Check } from 'lucide-react';
 import { getAvatarColor, cn } from '../lib/utils';
 import { formatRelative } from 'date-fns';
@@ -24,28 +23,41 @@ const ContactRow: React.FC<{
   const activeTheme = getTheme(currentUser.accentColor);
 
   useEffect(() => {
-    // Only fetch the single last message to save reads
-    const q = query(
-      collection(db, 'conversations', convId, 'messages'),
-      orderBy('timestamp', 'desc'),
-      limit(1)
-    );
-    const unsub = onSnapshot(q, (snap) => {
-      if (!snap.empty) {
-        setLastMsg(snap.docs[0].data() as Message);
+    const fetchLatestMsg = async () => {
+      const { data } = await supabase.from('messages')
+        .select('*')
+        .eq('conversation_id', convId)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (data && data.length > 0) {
+        setLastMsg({
+          id: data[0].id,
+          senderCode: data[0].sender_code,
+          text: data[0].text,
+          timestamp: data[0].created_at,
+          attachment: data[0].attachment
+        });
       }
-    }, (error) => {
-      // Gracefully handle permission errors when conversation document does not exist yet
-      console.warn("Inactive conversation subscription, waiting for initial chat event:", convId);
-    });
-    return () => unsub();
+    };
+    fetchLatestMsg();
+
+    const channelId = `public:messages:conversation_id=eq.${convId}-${Date.now()}`;
+    const channel = supabase.channel(channelId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${convId}` }, () => {
+        fetchLatestMsg();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [convId]);
 
   const name = contact.displayName || contact.code;
   
   // Decide unread status based on if lastMsg timestamp > lastReadAt
   let unread = false;
-  if (lastMsg?.timestamp && contact.lastReadAt && lastMsg.timestamp.toMillis() > contact.lastReadAt.toMillis()) {
+  if (lastMsg?.timestamp && contact.lastReadAt && new Date(lastMsg.timestamp) > new Date(contact.lastReadAt)) {
     if (lastMsg.senderCode !== currentUser.code) { // Only unread if they sent it
       unread = true;
     }
@@ -54,7 +66,7 @@ const ContactRow: React.FC<{
   // Formatting date
   let timeStr = '';
   if (lastMsg?.timestamp) {
-    const d = new Date(lastMsg.timestamp.toMillis());
+    const d = new Date(lastMsg.timestamp);
     // Simple today check
     const today = new Date();
     if (d.toDateString() === today.toDateString()) {
@@ -149,32 +161,30 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
     setAddError('');
 
     try {
-      const userRef = doc(db, 'users', cleanCode);
-      const userSnap = await getDoc(userRef);
+      const { data: otherUser } = await supabase.from('users').select('*').eq('code', cleanCode).single();
 
-      if (!userSnap.exists()) {
+      if (!otherUser) {
         setAddError('No one found with that code.');
       } else {
-        const otherUser = userSnap.data() as User;
-        
         // Add to our contacts
-        const newContactRef = doc(db, 'users', currentUser.code, 'contacts', cleanCode);
-        const existingContactSnap = await getDoc(newContactRef);
-        if (existingContactSnap.exists()) {
-          await setDoc(newContactRef, {
-            isDeleted: false,
-            displayName: otherUser.displayName || '',
-            lastMessageAt: serverTimestamp(),
-            lastReadAt: serverTimestamp()
-          }, { merge: true });
+        const { data: existingContact } = await supabase.from('contacts').select('*')
+          .eq('user_code', currentUser.code).eq('contact_code', cleanCode).single();
+          
+        if (existingContact) {
+           await supabase.from('contacts').update({
+             display_name: otherUser.display_name || '',
+             is_deleted: false,
+             last_message_at: new Date().toISOString(),
+             last_read_at: new Date().toISOString()
+           }).eq('id', existingContact.id);
         } else {
-          await setDoc(newContactRef, {
-            code: cleanCode,
-            displayName: otherUser.displayName || '',
-            createdAt: serverTimestamp(),
-            lastMessageAt: serverTimestamp(),
-            lastReadAt: serverTimestamp(),
-          });
+           await supabase.from('contacts').insert([{
+             user_code: currentUser.code,
+             contact_code: cleanCode,
+             display_name: otherUser.display_name || '',
+             last_message_at: new Date().toISOString(),
+             last_read_at: new Date().toISOString()
+           }]);
         }
 
         setAddCode('');

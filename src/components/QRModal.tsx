@@ -4,8 +4,7 @@ import { X, Copy, Check, Download, Camera, Upload, RefreshCw, AlertCircle, Spark
 import jsQR from 'jsqr';
 import { cn } from '../lib/utils';
 import { User } from '../lib/types';
-import { db } from '../lib/firebase';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 
 interface QRModalProps {
   currentUser: User;
@@ -178,23 +177,28 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
     setSubmitError(null);
 
     try {
-      const userRef = doc(db, 'users', cleanCode);
-      const userSnap = await getDoc(userRef);
+      const { data: otherUser } = await supabase.from('users').select('*').eq('code', cleanCode).single();
 
-      if (!userSnap.exists()) {
+      if (!otherUser) {
         setSubmitError('No registered user found with that code.');
       } else {
-        const otherUser = userSnap.data() as User;
-        
         // Add to our contacts list
-        const newContactRef = doc(db, 'users', currentUser.code, 'contacts', cleanCode);
-        await setDoc(newContactRef, {
-          code: cleanCode,
-          displayName: otherUser.displayName || '',
-          createdAt: serverTimestamp(),
-          lastMessageAt: serverTimestamp(),
-          lastReadAt: serverTimestamp(),
-        });
+        const { data: existingContact } = await supabase.from('contacts').select('*')
+          .eq('user_code', currentUser.code).eq('contact_code', cleanCode).single();
+          
+        if (existingContact) {
+           await supabase.from('contacts').update({
+             display_name: otherUser.display_name || '',
+             is_deleted: false,
+             last_message_at: new Date().toISOString()
+           }).eq('id', existingContact.id);
+        } else {
+           await supabase.from('contacts').insert([{
+             user_code: currentUser.code,
+             contact_code: cleanCode,
+             display_name: otherUser.display_name || ''
+           }]);
+        }
 
         onContactAdded();
         onClose();

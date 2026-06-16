@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Contact, Conversation } from '../lib/types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, onSnapshot, query, orderBy, where, doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { Sidebar } from './Sidebar';
 import { ChatScreen } from './ChatScreen';
 import { ProfileModal } from './ProfileModal';
@@ -68,79 +67,88 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
 
   // Auto-sync contacts from active conversations we're in
   useEffect(() => {
-    const qConv = query(
-      collection(db, 'conversations'),
-      where('uids', 'array-contains', currentUser.uid)
-    );
-
-    const unsubscribeConv = onSnapshot(qConv, async (snapshot) => {
-      for (const d of snapshot.docs) {
-        const conv = d.data() as Conversation;
-        const otherCode = conv.codes.find(c => c !== currentUser.code);
-        if (otherCode) {
-          const contactRef = doc(db, 'users', currentUser.code, 'contacts', otherCode);
-          const contactSnap = await getDoc(contactRef);
-          if (!contactSnap.exists()) {
-            let displayName = otherCode;
-            try {
-              const otherUserSnap = await getDoc(doc(db, 'users', otherCode));
-              if (otherUserSnap.exists()) {
-                displayName = otherUserSnap.data().displayName || otherCode;
+    const fetchAndListenConversations = async () => {
+      // Listen for conversations where our uid is in the array
+      // Supabase realtime array contains filtering is tricky, so we just listen to all changes
+      // and filter locally
+      const channelId = `public:conversations:auto-sync-${currentUser.uid}-${Date.now()}`;
+      const channel = supabase.channel(channelId)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, async (payload) => {
+          const conv = (payload.new || payload.old) as Conversation;
+          if (conv && conv.uids && conv.uids.includes(currentUser.uid)) {
+            const otherCode = conv.codes.find(c => c !== currentUser.code);
+            if (otherCode) {
+              const { data: existingContact } = await supabase.from('contacts')
+                .select('*')
+                .eq('user_code', currentUser.code)
+                .eq('contact_code', otherCode)
+                .single();
+                
+              if (!existingContact) {
+                let displayName = otherCode;
+                const { data: otherUser } = await supabase.from('users').select('display_name').eq('code', otherCode).single();
+                if (otherUser) {
+                  displayName = otherUser.display_name;
+                }
+                
+                await supabase.from('contacts').insert([{
+                  user_code: currentUser.code,
+                  contact_code: otherCode,
+                  display_name: displayName,
+                  last_message_at: conv.createdAt || new Date().toISOString()
+                }]);
               }
-            } catch (err) {
-              console.error("Failed to get other user name:", err);
-            }
-
-            try {
-              await setDoc(contactRef, {
-                code: otherCode,
-                displayName: displayName,
-                createdAt: serverTimestamp(),
-                lastMessageAt: conv.createdAt || serverTimestamp(),
-                lastReadAt: serverTimestamp(),
-              });
-            } catch (err) {
-              console.error("Failed to auto-add contact:", err);
             }
           }
-        }
-      }
-    }, (error) => {
-      console.error("Error listening to conversations:", error);
-    });
-
-    return () => unsubscribeConv();
+        })
+        .subscribe();
+      
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    };
+    
+    const cleanup = fetchAndListenConversations();
+    return () => {
+      cleanup.then(unsub => unsub && unsub());
+    };
   }, [currentUser.code, currentUser.uid]);
 
   useEffect(() => {
-    const q = query(
-      collection(db, 'users', currentUser.code, 'contacts'),
-      orderBy('lastMessageAt', 'desc')
-    );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const newContacts: Contact[] = [];
-      snapshot.forEach((doc) => {
-        const contactData = doc.data() as Contact;
-        if (!contactData.isDeleted) {
-          newContacts.push(contactData);
-        }
-      });
-      setContacts(newContacts);
-      
-      // Update active contact if its data changed using callback form to avoid stale closure
-      setActiveContact(prev => {
-        if (!prev) return null;
-        const foundDoc = snapshot.docs.find(d => d.id === prev.code);
-        if (!foundDoc) return null;
-        const contactData = foundDoc.data() as Contact;
-        if (contactData.isDeleted) return null;
-        return contactData;
-      });
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `users/${currentUser.code}/contacts`);
-    });
+    const fetchContacts = async () => {
+      const { data } = await supabase.from('contacts')
+        .select('*')
+        .eq('user_code', currentUser.code)
+        .order('last_message_at', { ascending: false });
+        
+      if (data) {
+        const parsedContacts = data.map(d => ({
+          id: d.id,
+          code: d.contact_code,
+          displayName: d.display_name,
+          createdAt: d.created_at,
+          lastMessageAt: d.last_message_at,
+          lastReadAt: d.last_read_at,
+          clearedAt: d.cleared_at,
+          isBlocked: d.is_blocked,
+          isDeleted: d.is_deleted
+        })).filter(c => !c.isDeleted);
+        setContacts(parsedContacts);
+      }
+    };
+    
+    fetchContacts();
 
-    return () => unsubscribe();
+    const channelId = `public:contacts:user_code=eq.${currentUser.code}-${Date.now()}`;
+    const channel = supabase.channel(channelId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'contacts', filter: `user_code=eq.${currentUser.code}` }, () => {
+        fetchContacts(); // Refetch on change to simplify sorting
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [currentUser.code]);
 
   const handleSelectContact = (contact: Contact) => {

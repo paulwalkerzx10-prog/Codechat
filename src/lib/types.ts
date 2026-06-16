@@ -2,19 +2,20 @@ export interface User {
   uid: string;
   code: string;
   displayName: string;
-  createdAt: any; // Firestore Timestamp
+  createdAt: string;
   accentColor?: string;
   patternEnabled?: boolean;
   patternStyle?: string;
 }
 
 export interface Contact {
+  id?: string;
   code: string;
   displayName: string;
-  createdAt: any;
-  lastMessageAt: any;
-  lastReadAt: any;
-  clearedAt?: any;
+  createdAt: string;
+  lastMessageAt: string;
+  lastReadAt: string;
+  clearedAt?: string | null;
   isBlocked?: boolean;
   isDeleted?: boolean;
 }
@@ -23,7 +24,7 @@ export interface Conversation {
   id: string;
   uids: string[];
   codes: string[];
-  createdAt: any;
+  createdAt: string;
 }
 
 export interface MessageAttachment {
@@ -37,6 +38,6 @@ export interface Message {
   id: string;
   senderCode: string;
   text: string;
-  timestamp: any;
+  timestamp: string;
   attachment?: MessageAttachment;
 }

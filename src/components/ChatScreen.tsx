@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Contact, Message } from '../lib/types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, doc, query, orderBy, onSnapshot, setDoc, serverTimestamp, getDoc } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { Send, ArrowLeft, Trash2, Shield, Lock, Plus, Smile, Mic, Paperclip, FileText, X, Download, MoreVertical, Ban, Eraser } from 'lucide-react';
 import { getAvatarColor, cn } from '../lib/utils';
 import { getTheme } from '../lib/theme';
+import { ConfirmDialog } from './ConfirmDialog';
 
 // Helper to compress images so they fit safely under Firestore document boundaries and size limits
 const compressImage = (dataUrl: string): Promise<string> => {
@@ -77,6 +77,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
   const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
   const [showOptionsMenu, setShowOptionsMenu] = useState(false);
   const [localClearedTime, setLocalClearedTime] = useState<number | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ isOpen: boolean; type: 'clear' | 'block' | 'remove' | null }>({ isOpen: false, type: null });
 
   // Voice recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -107,36 +108,24 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
     setShowEmojiPicker(false);
     setLocalClearedTime(null);
     
-    // Ensure Conversation document exists so rules allow messages
     const ensureConversation = async () => {
-      const convRef = doc(db, 'conversations', conversationId);
-      let convExists = false;
-      try {
-        const convSnap = await getDoc(convRef);
-        convExists = convSnap.exists();
-      } catch (err) {
-        // If Permission Denied is thrown because the document doesn't exist yet
-        // and we are not in the existing UIDs list, we proceed to create it.
-        convExists = false;
-      }
+      const { data: convSnap } = await supabase.from('conversations').select('*').eq('id', conversationId).single();
 
-      if (!convExists) {
+      if (!convSnap) {
         try {
-          const userContactRef = doc(db, 'users', contact.code);
-          const userContactSnap = await getDoc(userContactRef);
-          const contactUid = userContactSnap.exists() ? (userContactSnap.data() as User).uid : '';
+          const { data: contactSnap } = await supabase.from('users').select('uid').eq('code', contact.code).single();
+          const contactUid = contactSnap ? contactSnap.uid : '';
           
           if (!contactUid) {
             setIsConvReady(true);
-            return; // Can't establish if we don't know their uid (shouldn't happen)
+            return;
           }
 
-          await setDoc(convRef, {
+          await supabase.from('conversations').insert([{
             id: conversationId,
             uids: [currentUser.uid, contactUid],
-            codes: [currentUser.code, contact.code],
-            createdAt: serverTimestamp()
-          });
+            codes: [currentUser.code, contact.code]
+          }]);
         } catch (err) {
           console.error("Could not ensure conversation", err);
         }
@@ -149,30 +138,38 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
   useEffect(() => {
     if (!isConvReady) return;
 
-    const q = query(
-      collection(db, 'conversations', conversationId, 'messages'),
-      orderBy('timestamp', 'asc')
-    );
+    const fetchMessages = async () => {
+       const { data } = await supabase.from('messages')
+         .select('*')
+         .eq('conversation_id', conversationId)
+         .order('created_at', { ascending: true });
+       if (data) {
+         setMessages(data.map(d => ({
+           id: d.id,
+           senderCode: d.sender_code,
+           text: d.text,
+           timestamp: d.created_at,
+           attachment: d.attachment
+         })));
+       }
+    };
+    fetchMessages();
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs: Message[] = [];
-      snapshot.forEach(d => {
-        msgs.push(d.data() as Message);
-      });
-      setMessages(msgs);
+    const channelId = `public:messages:conversation_id=eq.${conversationId}-${Date.now()}`;
+    const channel = supabase.channel(channelId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}` }, () => {
+        fetchMessages();
+      })
+      .subscribe();
       
-      // Update last read of this contact
-      if (msgs.length > 0) {
-        setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
-           lastReadAt: serverTimestamp()
-         }, { merge: true }).catch(console.error);
-      }
+    // Update lastReadAt using Supabase
+    if (contact.id) {
+       supabase.from('contacts').update({ last_read_at: new Date().toISOString() }).eq('id', contact.id).then(() => {});
+    }
 
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `conversations/${conversationId}/messages`);
-    });
-
-    return () => unsubscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [conversationId, isConvReady, currentUser.code, contact.code]);
 
   useEffect(() => {
@@ -281,25 +278,27 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
 
     try {
       const messageId = crypto.randomUUID ? crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
-      const msgDoc = doc(db, 'conversations', conversationId, 'messages', messageId);
       
       const payload: any = {
         id: messageId,
-        senderCode: currentUser.code,
+        conversation_id: conversationId,
+        sender_code: currentUser.code,
         text: text || `[Sent attachment: ${fileToSend?.name || 'file'}]`,
-        timestamp: serverTimestamp()
       };
 
       if (fileToSend) {
         payload.attachment = fileToSend;
       }
 
-      await setDoc(msgDoc, payload);
+      const { error } = await supabase.from('messages').insert([payload]);
+      if (error) throw error;
 
       // Update lastMessageAt on our contact
-      await setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
-        lastMessageAt: serverTimestamp()
-      }, { merge: true });
+      if (contact.id) {
+         await supabase.from('contacts').update({
+           last_message_at: new Date().toISOString()
+         }).eq('id', contact.id);
+      }
 
     } catch (err) {
       console.error("Failed to deliver message:", err);
@@ -312,43 +311,49 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
   };
 
   const handleRemove = async () => {
-    if (!window.confirm('Delete this contact?')) return;
     try {
       setShowOptionsMenu(false);
-      await setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
-        isDeleted: true
-      }, { merge: true });
+      setConfirmDialog({ isOpen: false, type: null });
+      if (contact.id) {
+        await supabase.from('contacts').update({
+          is_deleted: true
+        }).eq('id', contact.id);
+      }
       onRemoveContact();
     } catch(err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.code}/contacts/${contact.code}`);
+      console.error("Error removing contact", err);
     }
   };
 
   const handleClearChat = async () => {
-    if (!window.confirm('Clear all messages in this chat?')) return;
     try {
       setShowOptionsMenu(false);
+      setConfirmDialog({ isOpen: false, type: null });
       const now = Date.now();
       setLocalClearedTime(now);
-      await setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
-        clearedAt: serverTimestamp()
-      }, { merge: true });
+      if (contact.id) {
+        await supabase.from('contacts').update({
+          cleared_at: new Date().toISOString()
+        }).eq('id', contact.id);
+      }
     } catch(err) {
       setLocalClearedTime(null);
-      handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.code}/contacts/${contact.code}`);
+      console.error("Error clearing chat", err);
     }
   };
 
   const handleToggleBlock = async () => {
     const isBlocking = !contact.isBlocked;
-    if (isBlocking && !window.confirm('Block this contact? They will not be able to message you.')) return;
     try {
       setShowOptionsMenu(false);
-      await setDoc(doc(db, 'users', currentUser.code, 'contacts', contact.code), {
-        isBlocked: isBlocking
-      }, { merge: true });
+      setConfirmDialog({ isOpen: false, type: null });
+      if (contact.id) {
+        await supabase.from('contacts').update({
+          is_blocked: isBlocking
+        }).eq('id', contact.id);
+      }
     } catch(err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.code}/contacts/${contact.code}`);
+      console.error("Error toggling block", err);
     }
   };
 
@@ -375,6 +380,30 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
 
   return (
     <div className="flex flex-col h-full bg-transparent relative">
+      <ConfirmDialog 
+        isOpen={confirmDialog.isOpen}
+        title={
+          confirmDialog.type === 'clear' ? "Clear Chat" :
+          confirmDialog.type === 'block' ? "Block Contact" :
+          "Delete Contact"
+        }
+        message={
+          confirmDialog.type === 'clear' ? "Are you sure you want to clear all messages? This cannot be undone." :
+          confirmDialog.type === 'block' ? "Are you sure you want to block this contact? They will not be able to message you." :
+          "Are you sure you want to delete this contact? You won't be able to chat with them unless you add them again."
+        }
+        confirmText={
+          confirmDialog.type === 'clear' ? "Clear" :
+          confirmDialog.type === 'block' ? "Block" :
+          "Delete"
+        }
+        onConfirm={() => {
+          if (confirmDialog.type === 'clear') handleClearChat();
+          else if (confirmDialog.type === 'block') handleToggleBlock();
+          else if (confirmDialog.type === 'remove') handleRemove();
+        }}
+        onCancel={() => setConfirmDialog({ isOpen: false, type: null })}
+      />
       {/* Hidden File Picker Input */}
       <input 
         type="file" 
@@ -422,21 +451,28 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
               <div className="fixed inset-0 z-40" onClick={() => setShowOptionsMenu(false)} />
               <div className="absolute right-0 top-12 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 z-50 overflow-hidden py-2 animate-in fade-in zoom-in duration-150">
                 <button 
-                  onClick={handleClearChat}
+                  onClick={() => { setShowOptionsMenu(false); setConfirmDialog({ isOpen: true, type: 'clear' }); }}
                   className="w-full px-4 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
                 >
                   <Eraser className="w-4 h-4 text-slate-400" />
                   Clear chat
                 </button>
                 <button 
-                  onClick={handleToggleBlock}
+                  onClick={() => {
+                    setShowOptionsMenu(false);
+                    if (!contact.isBlocked) {
+                      setConfirmDialog({ isOpen: true, type: 'block' });
+                    } else {
+                      handleToggleBlock(); // Unblocking doesn't need confirm
+                    }
+                  }}
                   className="w-full px-4 py-2.5 text-left text-sm font-medium text-red-600 hover:bg-red-50 flex items-center gap-3 transition-colors"
                 >
                   <Ban className="w-4 h-4 text-red-500" />
                   {contact.isBlocked ? "Unblock contact" : "Block contact"}
                 </button>
                 <button 
-                  onClick={handleRemove}
+                  onClick={() => { setShowOptionsMenu(false); setConfirmDialog({ isOpen: true, type: 'remove' }); }}
                   className="w-full px-4 py-2.5 text-left text-sm font-medium text-red-600 hover:bg-red-50 flex items-center gap-3 transition-colors"
                 >
                   <Trash2 className="w-4 h-4 text-red-500" />
