@@ -8,9 +8,10 @@ import { getTheme } from '../lib/theme';
 
 interface MainLayoutProps {
   currentUser: User;
+  onLogout?: () => void;
 }
 
-export function MainLayout({ currentUser }: MainLayoutProps) {
+export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [showProfile, setShowProfile] = useState(false);
@@ -86,17 +87,25 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
                 
               if (!existingContact) {
                 let displayName = otherCode;
-                const { data: otherUser } = await supabase.from('users').select('display_name').eq('code', otherCode).single();
+                let avatarUrl = '';
+                const { data: otherUser } = await supabase.from('users').select('display_name, avatar_url').eq('code', otherCode).single();
                 if (otherUser) {
-                  displayName = otherUser.display_name;
+                  displayName = otherUser.display_name || otherCode;
+                  avatarUrl = otherUser.avatar_url || '';
                 }
                 
                 await supabase.from('contacts').insert([{
                   user_code: currentUser.code,
                   contact_code: otherCode,
                   display_name: displayName,
+                  avatar_url: avatarUrl,
                   last_message_at: conv.createdAt || new Date().toISOString()
                 }]);
+              } else if (existingContact.is_deleted) {
+                await supabase.from('contacts').update({
+                  is_deleted: false,
+                  last_message_at: conv.createdAt || new Date().toISOString()
+                }).eq('id', existingContact.id);
               }
             }
           }
@@ -126,6 +135,7 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
           id: d.id,
           code: d.contact_code,
           displayName: d.display_name,
+          avatarUrl: d.avatar_url,
           createdAt: d.created_at,
           lastMessageAt: d.last_message_at,
           lastReadAt: d.last_read_at,
@@ -150,6 +160,21 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
       supabase.removeChannel(channel);
     };
   }, [currentUser.code]);
+
+  const derivedActiveContact = activeContact 
+    ? contacts.find(c => c.id === activeContact.id) || activeContact 
+    : null;
+
+  // Optional: auto-close if the active contact was deleted from the server
+  useEffect(() => {
+    if (activeContact) {
+       const stillExists = contacts.some(c => c.id === activeContact.id);
+       // We only want to close it if it was actually deleted AND we know contacts has been loaded
+       if (!stillExists && contacts.length > 0) {
+          // Actually, let's keep it simple: rely on ChatScreen's handleRemove to close it.
+       }
+    }
+  }, [contacts, activeContact]);
 
   const handleSelectContact = (contact: Contact) => {
     setActiveContact(contact);
@@ -178,10 +203,10 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
 
       {/* Chat Pane */}
       <div className={`flex-1 flex flex-col min-w-0 bg-transparent ${isMobileChatOpen ? 'block' : 'hidden md:flex'}`}>
-        {activeContact ? (
+        {activeContact && derivedActiveContact ? (
           <ChatScreen 
             currentUser={currentUser} 
-            contact={activeContact} 
+            contact={derivedActiveContact} 
             onBack={handleBackToContacts}
             onRemoveContact={() => {
               setActiveContact(null);
@@ -204,6 +229,7 @@ export function MainLayout({ currentUser }: MainLayoutProps) {
         <ProfileModal 
           currentUser={currentUser} 
           onClose={() => setShowProfile(false)} 
+          onLogout={onLogout}
         />
       )}
     </div>

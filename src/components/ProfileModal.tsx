@@ -1,12 +1,45 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { User } from '../lib/types';
 import { supabase } from '../lib/supabase';
-import { X, Copy, Check, Palette, Sparkles, Sliders } from 'lucide-react';
+import { X, Copy, Check, Palette, Sparkles, Sliders, LogOut, Camera } from 'lucide-react';
 import { THEMES, AccentColor, getTheme, DEFAULT_ACCENT } from '../lib/theme';
+import { getAvatarColor } from '../lib/utils';
+
+// Helper to compress avatar image
+const compressAvatar = (dataUrl: string): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new window.Image();
+    img.src = dataUrl;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+      
+      const MAX_SIZE = 300; // Small size for avatars
+      let width = img.width;
+      let height = img.height;
+
+      // Crop to square before scaling down
+      const minDimension = Math.min(width, height);
+      const startX = (width - minDimension) / 2;
+      const startY = (height - minDimension) / 2;
+
+      canvas.width = MAX_SIZE;
+      canvas.height = MAX_SIZE;
+
+      ctx.drawImage(img, startX, startY, minDimension, minDimension, 0, 0, MAX_SIZE, MAX_SIZE);
+      resolve(canvas.toDataURL('image/jpeg', 0.8));
+    };
+  });
+};
 
 interface ProfileModalProps {
   currentUser: User;
   onClose: () => void;
+  onLogout?: () => void;
 }
 
 const COLOR_OPTIONS: { id: AccentColor; name: string; bg: string; dot: string }[] = [
@@ -18,8 +51,9 @@ const COLOR_OPTIONS: { id: AccentColor; name: string; bg: string; dot: string }[
   { id: 'rose', name: 'Rose', bg: 'bg-rose-600', dot: 'bg-rose-450' }
 ];
 
-export function ProfileModal({ currentUser, onClose }: ProfileModalProps) {
+export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalProps) {
   const [displayName, setDisplayName] = useState(currentUser.displayName || '');
+  const [avatarUrl, setAvatarUrl] = useState(currentUser.avatarUrl || '');
   const [accentColor, setAccentColor] = useState<AccentColor>(
     (currentUser.accentColor || DEFAULT_ACCENT) as AccentColor
   );
@@ -28,6 +62,8 @@ export function ProfileModal({ currentUser, onClose }: ProfileModalProps) {
   
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeTheme = THEMES[accentColor] || THEMES[DEFAULT_ACCENT];
 
@@ -37,19 +73,60 @@ export function ProfileModal({ currentUser, onClose }: ProfileModalProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleAvatarSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) { 
+      alert("Image is too large. Please select an image under 2MB.");
+      return;
+    }
+
+    try {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        let base64Url = event.target?.result as string;
+        if (file.type.startsWith('image/')) {
+          base64Url = await compressAvatar(base64Url);
+          setAvatarUrl(base64Url);
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error("Failed to read image:", err);
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     try {
-      await supabase.from('users').update({
+      const { error } = await supabase.from('users').update({
         display_name: displayName.trim(),
+        avatar_url: avatarUrl,
         accent_color: accentColor,
         pattern_enabled: patternEnabled,
         pattern_style: patternStyle
       }).eq('code', currentUser.code);
+
+      if (error) {
+         if (error.message?.includes('column')) {
+            alert("Database schema error. Please run in Supabase SQL editor:\nALTER TABLE public.users ADD COLUMN avatar_url text;\nALTER TABLE public.contacts ADD COLUMN avatar_url text;");
+            return;
+         }
+         throw error;
+      }
+
+      // Sync updated profile to everyone who has added this user as a contact
+      await supabase.from('contacts').update({
+        display_name: displayName.trim() || currentUser.code,
+        avatar_url: avatarUrl
+      }).eq('contact_code', currentUser.code);
+
       onClose();
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      alert("Error saving: " + err.message);
     } finally {
       setSaving(false);
     }
@@ -90,6 +167,35 @@ export function ProfileModal({ currentUser, onClose }: ProfileModalProps) {
           </div>
 
           <form onSubmit={handleSave} className="space-y-6">
+            
+            {/* Avatar Upload */}
+            <div className="flex flex-col items-center mb-6">
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleAvatarSelect} 
+                accept="image/*" 
+                className="hidden" 
+              />
+              <div 
+                className="relative w-24 h-24 rounded-full bg-slate-100 flex justify-center items-center overflow-hidden border-2 border-slate-200 cursor-pointer hover:opacity-90 transition-opacity"
+                onClick={() => fileInputRef.current?.click()}
+                style={!avatarUrl ? { backgroundColor: getAvatarColor(currentUser.code) } : {}}
+              >
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-white text-3xl font-bold">
+                    {displayName ? displayName.substring(0, 2).toUpperCase() : currentUser.code.substring(0, 2)}
+                  </span>
+                )}
+                <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+                  <Camera className="w-8 h-8 text-white" />
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 mt-3 font-semibold">Tap to set profile picture</p>
+            </div>
+
             {/* Display Name Input */}
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-2">Display Name</label>
@@ -196,13 +302,26 @@ export function ProfileModal({ currentUser, onClose }: ProfileModalProps) {
             </div>
 
             {/* Action Buttons */}
-            <button
-              type="submit"
-              disabled={saving}
-              className={`w-full text-white font-bold py-4 rounded-2xl transition-all disabled:opacity-50 shadow-lg ${activeTheme.bgAccent} ${activeTheme.bgHover} ${activeTheme.shadowLight} active:scale-[0.99]`}
-            >
-              {saving ? 'Saving preferences...' : 'Save Settings'}
-            </button>
+            <div className="flex flex-col gap-3 pt-2">
+              <button
+                type="submit"
+                disabled={saving}
+                className={`w-full text-white font-bold py-4 rounded-2xl transition-all disabled:opacity-50 shadow-lg ${activeTheme.bgAccent} ${activeTheme.bgHover} ${activeTheme.shadowLight} active:scale-[0.99]`}
+              >
+                {saving ? 'Saving preferences...' : 'Save Settings'}
+              </button>
+              
+              {onLogout && (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="flex items-center justify-center gap-2 w-full text-red-500 font-bold py-4 rounded-2xl bg-red-50 hover:bg-red-100 transition-colors border border-red-100 active:scale-[0.99]"
+                >
+                  <LogOut className="w-5 h-5" />
+                  Log Out
+                </button>
+              )}
+            </div>
           </form>
         </div>
       </div>

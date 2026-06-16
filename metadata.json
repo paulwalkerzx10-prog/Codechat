@@ -1,6 +1,6 @@
 {
   "name": "CodeChat",
   "description": "Private, secure messaging application using unique user codes for connections.",
-  "requestFramePermissions": ["microphone"],
+  "requestFramePermissions": ["microphone", "camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

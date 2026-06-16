@@ -24,11 +24,17 @@ const ContactRow: React.FC<{
 
   useEffect(() => {
     const fetchLatestMsg = async () => {
-      const { data } = await supabase.from('messages')
+      let query = supabase.from('messages')
         .select('*')
         .eq('conversation_id', convId)
-        .order('created_at', { ascending: false })
-        .limit(1);
+        .order('created_at', { ascending: false });
+      
+      if (contact.clearedAt) {
+        query = query.gt('created_at', contact.clearedAt);
+      }
+
+      const { data } = await query.limit(1);
+      
       if (data && data.length > 0) {
         setLastMsg({
           id: data[0].id,
@@ -37,6 +43,8 @@ const ContactRow: React.FC<{
           timestamp: data[0].created_at,
           attachment: data[0].attachment
         });
+      } else {
+        setLastMsg(null);
       }
     };
     fetchLatestMsg();
@@ -51,7 +59,7 @@ const ContactRow: React.FC<{
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [convId]);
+  }, [convId, contact.clearedAt]);
 
   const name = contact.displayName || contact.code;
   
@@ -85,12 +93,16 @@ const ContactRow: React.FC<{
           isSelected ? `${activeTheme.bgLight} ${activeTheme.bgBorder}` : "border-transparent hover:bg-slate-50/70"
         )}
       >
-        <div 
-          className="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
-          style={{ backgroundColor: getAvatarColor(contact.code) }}
-        >
-          {contact.code.substring(0, 2)}
-        </div>
+        {contact.avatarUrl ? (
+          <img src={contact.avatarUrl} alt={name} className="w-12 h-12 rounded-full flex-shrink-0 object-cover" />
+        ) : (
+          <div 
+            className="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
+            style={{ backgroundColor: getAvatarColor(contact.code) }}
+          >
+            {contact.code.substring(0, 2)}
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex justify-between items-baseline mb-1">
             <span className={cn("font-semibold truncate", unread ? activeTheme.textOnLight : "text-slate-900", "text-base")}>
@@ -131,6 +143,10 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
   const [copied, setCopied] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const [qrTab, setQrTab] = useState<'mine' | 'scan'>('mine');
+  
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortOption, setSortOption] = useState<'recent' | 'oldest' | 'name'>('recent');
+  const [showSortMenu, setShowSortMenu] = useState(false);
 
   const activeTheme = getTheme(currentUser.accentColor);
 
@@ -173,6 +189,7 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
         if (existingContact) {
            await supabase.from('contacts').update({
              display_name: otherUser.display_name || '',
+             avatar_url: otherUser.avatar_url || '',
              is_deleted: false,
              last_message_at: new Date().toISOString(),
              last_read_at: new Date().toISOString()
@@ -182,6 +199,7 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
              user_code: currentUser.code,
              contact_code: cleanCode,
              display_name: otherUser.display_name || '',
+             avatar_url: otherUser.avatar_url || '',
              last_message_at: new Date().toISOString(),
              last_read_at: new Date().toISOString()
            }]);
@@ -198,90 +216,106 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
     }
   };
 
-  return (
-    <div className="flex flex-col h-full bg-transparent relative">
-      {isAdding ? (
-        <div className="absolute inset-0 z-10 bg-white/90 backdrop-blur-md flex flex-col h-full">
-          <div className="p-4 flex items-center justify-between border-b border-slate-100">
-            <button onClick={() => { setIsAdding(false); setAddError(''); }} className="p-2 text-slate-800 hover:bg-slate-100 rounded-full">
-              <X className="w-5 h-5" />
-            </button>
-            <h2 className="font-semibold text-slate-900">Add Contact</h2>
-            <div className="w-9" /> {/* Spacer */}
-          </div>
-          
-          <div className="p-6 flex-1 flex flex-col items-center justify-start text-center">
-            <h3 className="text-xl font-bold text-slate-900 mb-1">Connect using</h3>
-            <h3 className={`text-xl font-bold ${activeTheme.textAccent} mb-4`}>User Code</h3>
-            <p className="text-slate-500 text-sm mb-8 max-w-[250px]">
-              Enter the user code shared by the person you want to connect with.
-            </p>
+  if (isAdding) {
+    return (
+      <div className="flex flex-col h-full bg-white relative z-50">
+        <div className="p-4 flex items-center justify-between border-b border-slate-100">
+          <button onClick={() => { setIsAdding(false); setAddError(''); }} className="p-2 text-slate-800 hover:bg-slate-100 rounded-full">
+            <X className="w-5 h-5" />
+          </button>
+          <h2 className="font-semibold text-slate-900">Add Contact</h2>
+          <div className="w-9" /> {/* Spacer */}
+        </div>
+        
+        <div className="p-6 flex-1 flex flex-col items-center justify-start text-center overflow-y-auto">
+          <h3 className="text-xl font-bold text-slate-900 mb-1">Connect using</h3>
+          <h3 className={`text-xl font-bold ${activeTheme.textAccent} mb-4`}>User Code</h3>
+          <p className="text-slate-500 text-sm mb-8 max-w-[250px]">
+            Enter the user code shared by the person you want to connect with.
+          </p>
 
-            <form onSubmit={handleAddContact} className="w-full max-w-sm mb-8">
-              <div className="relative flex items-center bg-white border-2 border-slate-100 rounded-2xl overflow-hidden shadow-sm shadow-slate-100">
-                <div className={`${activeTheme.bgAccent} m-2 w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0`}>
-                  <span className="text-white font-bold text-xl">#</span>
-                </div>
-                <input
-                  type="text"
-                  value={addCode}
-                  onChange={(e) => setAddCode(e.target.value.toUpperCase())}
-                  placeholder="AB12-CD34"
-                  className="flex-1 bg-transparent py-4 px-2 text-xl font-bold tracking-widest text-slate-700 focus:outline-none uppercase placeholder:text-slate-300"
-                  maxLength={6}
-                  autoFocus
-                />
+          <form onSubmit={handleAddContact} className="w-full max-w-sm mb-8">
+            <div className="relative flex items-center bg-white border-2 border-slate-100 rounded-2xl overflow-hidden shadow-sm shadow-slate-100">
+              <div className={`${activeTheme.bgAccent} m-2 w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0`}>
+                <span className="text-white font-bold text-xl">#</span>
               </div>
-              {addError && <p className="text-red-500 text-sm mt-3">{addError}</p>}
-
-              <button 
-                type="submit" 
-                disabled={isSubmitting || addCode.length !== 6}
-                className={`w-full ${activeTheme.bgAccent} ${activeTheme.bgHover} text-white font-semibold py-4 rounded-xl mt-8 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg ${activeTheme.shadowAccent}`}
-              >
-                <Send className="w-5 h-5" />
-                Send Connection Request
-              </button>
-            </form>
-
-            <div className="flex items-center gap-4 w-full max-w-sm my-4">
-              <div className="flex-1 h-px bg-slate-100"></div>
-              <span className="text-slate-400 text-sm">or</span>
-              <div className="flex-1 h-px bg-slate-100"></div>
+              <input
+                type="text"
+                value={addCode}
+                onChange={(e) => setAddCode(e.target.value.toUpperCase())}
+                placeholder="AB12-CD34"
+                className="flex-1 bg-transparent py-4 px-2 text-xl font-bold tracking-widest text-slate-700 focus:outline-none uppercase placeholder:text-slate-300"
+                maxLength={6}
+                autoFocus
+              />
             </div>
+            {addError && <p className="text-red-500 text-sm mt-3">{addError}</p>}
 
             <button 
-              type="button"
-              onClick={() => {
-                setQrTab('scan');
-                setShowQR(true);
-              }}
-              className={`w-full max-w-sm mt-4 bg-white border-2 border-slate-100 p-4 rounded-2xl flex items-center gap-4 px-6 ${activeTheme.hoverBgLight} transition-all active:scale-[0.98]`}
+              type="submit" 
+              disabled={isSubmitting || addCode.length !== 6}
+              className={`w-full ${activeTheme.bgAccent} ${activeTheme.bgHover} text-white font-semibold py-4 rounded-xl mt-8 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg ${activeTheme.shadowAccent}`}
             >
-              <div className={`w-12 h-12 ${activeTheme.bgLight} ${activeTheme.textAccent} rounded-xl flex items-center justify-center`}>
-                <ScanLine className="w-6 h-6" />
-              </div>
-              <div className="text-left">
-                <h4 className="font-semibold text-slate-800">Scan Code</h4>
-                <p className="text-sm text-slate-500">Scan their QR code to connect instantly.</p>
-              </div>
+              <Send className="w-5 h-5" />
+              Send Connection Request
             </button>
-            
-            <div className="mt-auto pb-4 flex items-center gap-2 text-slate-400 text-xs text-center px-4">
-              <Shield className="w-4 h-4 flex-shrink-0" />
-              <span>A connection request will be sent. They can accept or ignore.</span>
+          </form>
+
+          <div className="flex items-center gap-4 w-full max-w-sm my-4">
+            <div className="flex-1 h-px bg-slate-100"></div>
+            <span className="text-slate-400 text-sm">or</span>
+            <div className="flex-1 h-px bg-slate-100"></div>
+          </div>
+
+          <button 
+            type="button"
+            onClick={() => {
+              setQrTab('scan');
+              setShowQR(true);
+            }}
+            className={`w-full max-w-sm mt-4 bg-white border-2 border-slate-100 p-4 rounded-2xl flex items-center gap-4 px-6 ${activeTheme.hoverBgLight} transition-all active:scale-[0.98]`}
+          >
+            <div className={`w-12 h-12 ${activeTheme.bgLight} ${activeTheme.textAccent} rounded-xl flex items-center justify-center`}>
+              <ScanLine className="w-6 h-6" />
             </div>
+            <div className="text-left">
+              <h4 className="font-semibold text-slate-800">Scan Code</h4>
+              <p className="text-sm text-slate-500">Scan their QR code to connect instantly.</p>
+            </div>
+          </button>
+          
+          <div className="mt-auto pt-4 pb-4 flex items-center gap-2 text-slate-400 text-xs text-center px-4">
+            <Shield className="w-4 h-4 flex-shrink-0" />
+            <span>A connection request will be sent. They can accept or ignore.</span>
           </div>
         </div>
-      ) : null}
+        
+        {showQR && (
+          <QRModal
+            currentUser={currentUser}
+            contacts={contacts}
+            initialTab={qrTab}
+            onClose={() => setShowQR(false)}
+            onContactAdded={() => {}}
+          />
+        )}
+      </div>
+    );
+  }
 
+  return (
+    <div className="flex flex-col h-full bg-transparent relative">
       {/* Header */}
       <div className="p-4 flex items-center justify-between bg-transparent pt-6">
         <button 
           onClick={onOpenProfile}
-          className={`w-8 h-8 rounded-full flex items-center justify-center text-slate-900 border-2 border-transparent ${activeTheme.hoverBorderLight} transition-colors font-bold text-xs shadow-sm ${activeTheme.bgLight}`}
+          className={`w-8 h-8 rounded-full flex items-center justify-center text-slate-900 border-2 border-transparent ${activeTheme.hoverBorderLight} transition-colors font-bold text-xs shadow-sm ${activeTheme.bgLight} overflow-hidden`}
         >
-          {currentUser.displayName ? currentUser.displayName.substring(0,2).toUpperCase() : currentUser.code.substring(0,2)}
+          {currentUser.avatarUrl ? (
+             <img src={currentUser.avatarUrl} alt="Profile" className="w-full h-full object-cover" />
+          ) : (
+             currentUser.displayName ? currentUser.displayName.substring(0,2).toUpperCase() : currentUser.code.substring(0,2)
+          )}
         </button>
         <div className="flex flex-col items-center">
           <span className="font-black text-xl text-slate-900 tracking-tight">CodeChat</span>
@@ -323,24 +357,54 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
         </div>
       </div>
 
-      {/* Search & Add */}
-      <div className="px-4 mb-4">
-        <button 
-          onClick={() => setIsAdding(true)}
-          className="w-full flex items-center gap-2 bg-white/50 backdrop-blur-sm border border-slate-200 py-3 px-4 rounded-full text-slate-400 hover:bg-white/80 transition-colors text-sm shadow-sm"
-        >
-          <Search className="w-4 h-4" />
-          <span>Search or Add by User Code</span>
-        </button>
+      {/* Search contacts */}
+      <div className="px-4 mb-4 relative z-0">
+        <div className="w-full flex items-center gap-2 bg-white/50 backdrop-blur-sm border border-slate-200 py-3 px-4 rounded-full shadow-sm focus-within:bg-white/80 focus-within:border-slate-300 transition-colors">
+          <Search className="w-4 h-4 text-slate-400" />
+          <input 
+            type="text"
+            placeholder="Search contacts..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="flex-1 bg-transparent border-none focus:outline-none text-sm text-slate-700 placeholder:text-slate-400"
+          />
+        </div>
       </div>
 
-      <div className="px-4 py-2 flex items-center justify-between">
+      <div className="px-4 py-2 flex items-center justify-between relative z-10">
         <h3 className="font-bold text-slate-800">Chats</h3>
-        <span className={`text-xs font-bold ${activeTheme.textAccent} ${activeTheme.bgLight} px-2.5 py-1 rounded-full cursor-pointer hover:opacity-95`}>All ▼</span>
+        <button 
+          onClick={() => setShowSortMenu(!showSortMenu)}
+          className={`text-xs font-bold ${activeTheme.textAccent} ${activeTheme.bgLight} px-2.5 py-1 rounded-full cursor-pointer hover:opacity-95 flex items-center gap-1`}
+        >
+          {sortOption === 'recent' ? 'Recent' : sortOption === 'oldest' ? 'Oldest' : 'Name'} ▼
+        </button>
+        {showSortMenu && (
+          <div className="absolute right-4 top-10 w-32 bg-white rounded-xl shadow-lg border border-slate-100 py-2">
+            <button 
+              onClick={() => { setSortOption('recent'); setShowSortMenu(false); }}
+              className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Recent
+            </button>
+            <button 
+              onClick={() => { setSortOption('oldest'); setShowSortMenu(false); }}
+              className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Oldest
+            </button>
+            <button 
+              onClick={() => { setSortOption('name'); setShowSortMenu(false); }}
+              className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Name (A-Z)
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Contacts List */}
-      <div className="flex-1 overflow-y-auto bg-transparent mb-20 scrollbar-hide">
+      <div className="flex-1 overflow-y-auto bg-transparent mb-20 scrollbar-hide z-0 relative">
         {contacts.length === 0 ? (
           <div className="p-8 text-center text-slate-400 text-sm">
             <p>No connections established.</p>
@@ -348,7 +412,29 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
           </div>
         ) : (
           <ul className="divide-y divide-slate-50">
-            {contacts.map(contact => (
+            {contacts
+              .filter(c => {
+                if (c.isDeleted) return false;
+                if (!searchQuery) return true;
+                const matchName = c.displayName?.toLowerCase().includes(searchQuery.toLowerCase());
+                const matchCode = c.code.toLowerCase().includes(searchQuery.toLowerCase());
+                return matchName || matchCode;
+              })
+              .sort((a, b) => {
+                if (sortOption === 'recent') {
+                  return new Date(b.lastMessageAt || 0).getTime() - new Date(a.lastMessageAt || 0).getTime();
+                }
+                if (sortOption === 'oldest') {
+                  return new Date(a.lastMessageAt || 0).getTime() - new Date(b.lastMessageAt || 0).getTime();
+                }
+                if (sortOption === 'name') {
+                  const nameA = a.displayName || a.code;
+                  const nameB = b.displayName || b.code;
+                  return nameA.localeCompare(nameB);
+                }
+                return 0;
+              })
+              .map(contact => (
               <ContactRow
                 key={contact.code}
                 contact={contact}

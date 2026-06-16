@@ -2,6 +2,7 @@ export interface User {
   uid: string;
   code: string;
   displayName: string;
+  avatarUrl?: string;
   createdAt: string;
   accentColor?: string;
   patternEnabled?: boolean;
@@ -12,6 +13,7 @@ export interface Contact {
   id?: string;
   code: string;
   displayName: string;
+  avatarUrl?: string;
   createdAt: string;
   lastMessageAt: string;
   lastReadAt: string;

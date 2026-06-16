@@ -249,9 +249,10 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
       recordingTimerRef.current = setInterval(() => {
         setRecordingSeconds(prev => prev + 1);
       }, 1000);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error starting microphone recording:", err);
-      alert("Could not start audio notes. Please check microphone permission setup.");
+      // It is often blocked by the browser if the user has not granted permission.
+      alert(`Could not start audio notes. Please allow microphone permissions in your browser. Error details: ${err.message || 'Permission denied'}`);
     }
   };
 
@@ -315,13 +316,29 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
       setShowOptionsMenu(false);
       setConfirmDialog({ isOpen: false, type: null });
       if (contact.id) {
-        await supabase.from('contacts').update({
+        const { error } = await supabase.from('contacts').update({
           is_deleted: true
         }).eq('id', contact.id);
+        
+        if (error) {
+           console.error("Supabase remove error", error);
+           if (error.message?.includes('column')) {
+              alert("Database schema error limit. Please run in Supabase SQL editor: ALTER TABLE public.contacts ADD COLUMN is_deleted boolean DEFAULT false, ADD COLUMN is_blocked boolean DEFAULT false;");
+              return;
+           } else {
+              alert("Error removing contact: " + error.message);
+              return;
+           }
+        }
       }
       onRemoveContact();
-    } catch(err) {
+    } catch(err: any) {
       console.error("Error removing contact", err);
+      if (err.message && err.message.includes('column')) {
+         alert("Database schema error. Please run: ALTER TABLE public.contacts ADD COLUMN is_deleted boolean DEFAULT false, ADD COLUMN is_blocked boolean DEFAULT false;");
+      } else {
+         alert("Error removing contact: " + err.message);
+      }
     }
   };
 
@@ -331,10 +348,33 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
       setConfirmDialog({ isOpen: false, type: null });
       const now = Date.now();
       setLocalClearedTime(now);
+
+      let clearTime = new Date().toISOString();
       if (contact.id) {
-        await supabase.from('contacts').update({
-          cleared_at: new Date().toISOString()
+         // Fix clock drift: Get the exact timestamp of the newest message from the server
+         const convId = [currentUser.code, contact.code].sort().join('_');
+         const { data: latestMsgs } = await supabase.from('messages')
+           .select('created_at')
+           .eq('conversation_id', convId)
+           .order('created_at', { ascending: false })
+           .limit(1);
+           
+         if (latestMsgs && latestMsgs.length > 0) {
+            clearTime = latestMsgs[0].created_at;
+         }
+
+        const { error } = await supabase.from('contacts').update({
+          cleared_at: clearTime
         }).eq('id', contact.id);
+        
+        if (error) {
+           console.error("Supabase clear chat error", error);
+           if (error.message?.includes('column')) {
+              alert("Database schema error limit. Please run in Supabase SQL editor: ALTER TABLE public.contacts ADD COLUMN cleared_at timestamp with time zone;");
+           } else {
+              alert("Error clearing chat: " + error.message);
+           }
+        }
       }
     } catch(err) {
       setLocalClearedTime(null);
@@ -348,9 +388,17 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
       setShowOptionsMenu(false);
       setConfirmDialog({ isOpen: false, type: null });
       if (contact.id) {
-        await supabase.from('contacts').update({
+        const { error } = await supabase.from('contacts').update({
           is_blocked: isBlocking
         }).eq('id', contact.id);
+        if (error) {
+           console.error("Supabase toggle block error", error);
+           if (error.message?.includes('column')) {
+              alert("Database schema error limit. Please run in Supabase SQL editor: ALTER TABLE public.contacts ADD COLUMN is_deleted boolean DEFAULT false, ADD COLUMN is_blocked boolean DEFAULT false;");
+           } else {
+              alert("Error toggling block: " + error.message);
+           }
+        }
       }
     } catch(err) {
       console.error("Error toggling block", err);
@@ -424,12 +472,16 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
             <ArrowLeft className="w-5 h-5" />
           </button>
           
-          <div 
-            className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm"
-            style={{ backgroundColor: getAvatarColor(contact.code) }}
-          >
-            {contact.code.substring(0, 2)}
-          </div>
+          {contact.avatarUrl ? (
+            <img src={contact.avatarUrl} alt={name} className="w-10 h-10 rounded-full object-cover flex-shrink-0" />
+          ) : (
+            <div 
+              className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
+              style={{ backgroundColor: getAvatarColor(contact.code) }}
+            >
+              {contact.code.substring(0, 2)}
+            </div>
+          )}
           <div>
             <h2 className="font-bold text-slate-900">{name}</h2>
             <div className="text-[10px] font-semibold text-emerald-500">Online</div>
@@ -666,10 +718,19 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
       {/* Input Action Form */}
       <div className="absolute bottom-0 w-full p-4 bg-white/70 backdrop-blur-md border-t border-slate-100 pb-safe">
         {contact.isBlocked ? (
-          <div className="flex items-center justify-center p-3 bg-red-50 rounded-full border border-red-100">
+          <div className="flex flex-col sm:flex-row items-center justify-center p-3 bg-red-50 rounded-2xl border border-red-100 gap-2 sm:gap-4">
             <p className="text-sm text-red-600 font-medium flex items-center gap-2">
               <Ban className="w-4 h-4" /> You blocked this contact
             </p>
+            <button
+              type="button"
+              onClick={() => {
+                handleToggleBlock();
+              }}
+              className="text-xs font-bold text-white bg-red-500 hover:bg-red-600 px-4 py-1.5 rounded-full transition-colors"
+            >
+              Unblock
+            </button>
           </div>
         ) : (
           <form onSubmit={handleSend} className="flex items-center gap-3">
