@@ -78,7 +78,7 @@ const ContactRow: React.FC<{
     // Simple today check
     const today = new Date();
     if (d.toDateString() === today.toDateString()) {
-      timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
     } else {
       timeStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
     }

@@ -463,7 +463,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
       />
 
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-white/70 backdrop-blur-md pt-6">
+      <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-white/70 backdrop-blur-md pt-6 relative z-20">
         <div className="flex items-center gap-3">
           <button 
             onClick={onBack}
@@ -560,7 +560,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
             <div className="text-center text-slate-400 text-xs font-medium py-2">Today</div>
             {visibleMessages.map((msg, i) => {
               const isMe = msg.senderCode === currentUser.code;
-              const timeStr = msg.timestamp ? new Date(getTimestampMs(msg.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...';
+              const timeStr = msg.timestamp ? new Date(getTimestampMs(msg.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true }) : '...';
               
               return (
                 <div key={msg.id || i} className={cn("flex flex-col max-w-[80%] mb-2", isMe ? "ml-auto items-end" : "mr-auto items-start")}>

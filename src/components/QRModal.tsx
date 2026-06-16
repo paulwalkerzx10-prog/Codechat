@@ -147,7 +147,7 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
 
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const code = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: 'dontInvert'
+        inversionAttempts: 'attemptBoth'
       });
 
       if (code) {
@@ -245,15 +245,28 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) return;
 
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
+        // Scale down large images to improve scanning speed and reliability
+        const MAX_DIMENSION = 800;
+        let scanWidth = img.width;
+        let scanHeight = img.height;
+        
+        if (scanWidth > MAX_DIMENSION || scanHeight > MAX_DIMENSION) {
+          const ratio = Math.min(MAX_DIMENSION / scanWidth, MAX_DIMENSION / scanHeight);
+          scanWidth = Math.floor(scanWidth * ratio);
+          scanHeight = Math.floor(scanHeight * ratio);
+        }
+
+        canvas.width = scanWidth;
+        canvas.height = scanHeight;
+        ctx.drawImage(img, 0, 0, scanWidth, scanHeight);
 
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const code = jsQR(imageData.data, imageData.width, imageData.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, {
+          inversionAttempts: 'attemptBoth'
+        });
 
         if (code) {
           const decoded = code.data.trim().toUpperCase();
@@ -493,8 +506,37 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
                         <div className="flex-1 h-px bg-slate-100"></div>
                       </div>
 
+                      {/* Manual Code Entry */}
+                      <form 
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const formData = new FormData(e.currentTarget);
+                          const code = formData.get('manualCode') as string;
+                          if (code && code.trim().length === 6) {
+                            handleFoundCode(code.trim().toUpperCase());
+                          } else {
+                            setScanError('Code must be exactly 6 characters long.');
+                          }
+                        }}
+                        className="w-full flex items-center gap-2"
+                      >
+                        <input 
+                          name="manualCode"
+                          type="text" 
+                          placeholder="Enter 6-char code" 
+                          maxLength={6}
+                          className="flex-1 px-4 py-3 rounded-xl border border-slate-200 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200 uppercase font-mono tracking-widest text-center"
+                        />
+                        <button 
+                          type="submit"
+                          className="bg-violet-600 text-white font-semibold py-3 px-6 rounded-xl hover:bg-violet-700 transition-colors whitespace-nowrap"
+                        >
+                          Add
+                        </button>
+                      </form>
+
                       {/* File upload option (Super bulletproof) */}
-                      <label className="w-full flex items-center gap-4 bg-white border-2 border-dashed border-slate-200 p-4 rounded-2xl hover:bg-slate-50 transition-all text-left cursor-pointer group">
+                      <label className="w-full flex items-center gap-4 bg-white border-2 border-dashed border-slate-200 p-4 rounded-2xl hover:bg-slate-50 transition-all text-left cursor-pointer group mt-4">
                         <input
                           type="file"
                           accept="image/*"
