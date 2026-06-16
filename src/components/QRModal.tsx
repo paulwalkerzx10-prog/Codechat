@@ -18,6 +18,7 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
   const [activeTab, setActiveTab] = useState<'mine' | 'scan'>(initialTab);
   const [copied, setCopied] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const scanningRef = useRef(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [cameraBlocked, setCameraBlocked] = useState(false);
   const [addingCode, setAddingCode] = useState<string | null>(null);
@@ -57,6 +58,8 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
 
   // Toggle/Stop Scanning
   const stopCamera = () => {
+    scanningRef.current = false;
+    setScanning(false);
     if (requestRef.current) {
       cancelAnimationFrame(requestRef.current);
       requestRef.current = null;
@@ -65,7 +68,6 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
-    setScanning(false);
   };
 
   useEffect(() => {
@@ -91,10 +93,18 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
     setCameraBlocked(false);
     setAddingCode(null);
 
+    let stream: MediaStream | null = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
-      });
+      try {
+         stream = await navigator.mediaDevices.getUserMedia({
+           video: { facingMode: 'environment' }
+         });
+      } catch (e: any) {
+         // Fallback if environment camera constraint fails
+         stream = await navigator.mediaDevices.getUserMedia({
+           video: true
+         });
+      }
       
       streamRef.current = stream;
       if (videoRef.current) {
@@ -102,27 +112,33 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
         videoRef.current.setAttribute('playsinline', 'true'); // Required for iOS
         videoRef.current.play();
         setScanning(true);
-        requestRef.current = requestAnimationFrame(scanFrame);
+        scanningRef.current = true;
+        // The first frame request
+        requestRef.current = requestAnimationFrame(() => scanFrame(true));
       }
-    } catch (err) {
-      console.error('Camera permissions issue or no device:', err);
+    } catch (err: any) {
+      console.warn('Camera permissions issue or no device:', err);
       setCameraBlocked(true);
       setScanError(
-        'Could not access the camera. You might be in a restricted preview frame. Try uploading a QR image screenshot instead!'
+        'Could not access the camera (Permission denied). To fix this, try opening the application in a new tab, or use the file upload option to select an image.'
       );
     }
   };
 
   // Scan frame by frame
-  const scanFrame = () => {
-    if (!videoRef.current || !canvasRef.current || !scanning) {
-      requestRef.current = requestAnimationFrame(scanFrame);
+  const scanFrame = (isFirstFrame = false) => {
+    if (!scanningRef.current) return;
+    
+    if (!videoRef.current || !canvasRef.current) {
+      if (scanningRef.current) {
+         requestRef.current = requestAnimationFrame(() => scanFrame());
+      }
       return;
     }
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     if (video.readyState === video.HAVE_ENOUGH_DATA && ctx) {
       canvas.width = video.videoWidth;
@@ -139,11 +155,14 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
         if (decoded.length === 6) {
           stopCamera();
           handleFoundCode(decoded);
-          return;
+          return; // Stop scanning once we find it
         }
       }
     }
-    requestRef.current = requestAnimationFrame(scanFrame);
+    
+    if (scanningRef.current) {
+       requestRef.current = requestAnimationFrame(() => scanFrame());
+    }
   };
 
   // Handle Decoded QR code (from camera or file uploads)
@@ -189,6 +208,7 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
         if (existingContact) {
            await supabase.from('contacts').update({
              display_name: otherUser.display_name || '',
+             avatar_url: otherUser.avatar_url || '',
              is_deleted: false,
              last_message_at: new Date().toISOString()
            }).eq('id', existingContact.id);
@@ -196,7 +216,8 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
            await supabase.from('contacts').insert([{
              user_code: currentUser.code,
              contact_code: cleanCode,
-             display_name: otherUser.display_name || ''
+             display_name: otherUser.display_name || '',
+             avatar_url: otherUser.avatar_url || ''
            }]);
         }
 
@@ -419,6 +440,9 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
                       <video 
                         ref={videoRef}
                         className="w-full h-full object-cover"
+                        autoPlay
+                        playsInline
+                        muted
                       />
                       <canvas 
                         ref={canvasRef} 
