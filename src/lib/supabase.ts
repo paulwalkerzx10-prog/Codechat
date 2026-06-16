@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-let envUrl = import.meta.env.VITE_SUPABASE_URL?.trim() || "";
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() || "";
+let envUrl = import.meta.env.VITE_SUPABASE_URL?.trim() || "https://cwaoinqaywsjgapaccdm.supabase.co";
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3YW9pbnFheXdzamdhcGFjY2RtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1ODE1MDcsImV4cCI6MjA5NzE1NzUwN30.Mrbo480m_lJSb1hSUfqguJ4-JQ5gKOd2LPu7HI1F_mE";
 
 // Sanitize the URL in case the user accidentally included the /rest/v1 path or trailing slashes
 if (envUrl.endsWith('/rest/v1/')) {

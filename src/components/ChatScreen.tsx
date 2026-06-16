@@ -362,6 +362,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
   const getTimestampMs = (ts: any): number => {
     if (!ts) return 0;
     if (typeof ts === 'number') return ts;
+    if (typeof ts === 'string') return new Date(ts).getTime();
     if (ts instanceof Date) return ts.getTime();
     if (typeof ts.getTime === 'function') return ts.getTime();
     if (typeof ts.toMillis === 'function') return ts.toMillis();
@@ -507,7 +508,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
             <div className="text-center text-slate-400 text-xs font-medium py-2">Today</div>
             {visibleMessages.map((msg, i) => {
               const isMe = msg.senderCode === currentUser.code;
-              const timeStr = msg.timestamp ? new Date(msg.timestamp.toMillis()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...';
+              const timeStr = msg.timestamp ? new Date(getTimestampMs(msg.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...';
               
               return (
                 <div key={msg.id || i} className={cn("flex flex-col max-w-[80%] mb-2", isMe ? "ml-auto items-end" : "mr-auto items-start")}>
