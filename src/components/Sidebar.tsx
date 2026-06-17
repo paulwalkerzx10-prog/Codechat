@@ -6,6 +6,7 @@ import { getAvatarColor, cn } from '../lib/utils';
 import { formatRelative } from 'date-fns';
 import { QRModal } from './QRModal';
 import { getTheme } from '../lib/theme';
+import { playSound } from '../lib/sounds';
 
 const ContactRow: React.FC<{ 
   contact: Contact; 
@@ -13,12 +14,16 @@ const ContactRow: React.FC<{
   isSelected: boolean; 
   onSelect: () => void; 
   onNewMessage?: (contact: Contact, text: string) => void;
+  isOnline?: boolean;
+  isTyping?: boolean;
 }> = ({ 
   contact, 
   currentUser, 
   isSelected, 
   onSelect,
-  onNewMessage
+  onNewMessage,
+  isOnline,
+  isTyping
 }) => {
   const [lastMsg, setLastMsg] = useState<Message | null>(null);
   const convId = [currentUser.code, contact.code].sort().join('_');
@@ -62,6 +67,7 @@ const ContactRow: React.FC<{
         if (payload.eventType === 'INSERT') {
           const newMsg = payload.new as any;
           if (newMsg && newMsg.sender_code !== currentUser.code && !contact.isBlocked) {
+            playSound('receive', currentUser.code);
             const notifsEnabled = localStorage.getItem(`notifications_${currentUser.code}`) === 'true';
             if (notifsEnabled && Notification.permission === 'granted') {
               if (document.hidden || !isSelectedRef.current) {
@@ -136,13 +142,23 @@ const ContactRow: React.FC<{
         )}
       >
         {contact.avatarUrl ? (
-          <img src={contact.avatarUrl} alt={name} className="w-12 h-12 rounded-full flex-shrink-0 object-cover" />
+          <div className="relative w-12 h-12 flex-shrink-0">
+            <img src={contact.avatarUrl} alt={name} className="w-12 h-12 rounded-full object-cover" />
+            {isOnline && (
+              <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-white rounded-full"></span>
+            )}
+          </div>
         ) : (
-          <div 
-            className="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
-            style={{ backgroundColor: getAvatarColor(contact.code) }}
-          >
-            {contact.code.substring(0, 2)}
+          <div className="relative w-12 h-12 flex-shrink-0">
+            <div 
+              className="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-sm"
+              style={{ backgroundColor: getAvatarColor(contact.code) }}
+            >
+              {contact.code.substring(0, 2)}
+            </div>
+            {isOnline && (
+              <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-white rounded-full"></span>
+            )}
           </div>
         )}
         <div className="flex-1 min-w-0">
@@ -157,8 +173,13 @@ const ContactRow: React.FC<{
               "text-sm truncate max-w-[200px]", 
               unread ? "text-slate-800 font-medium" : "text-slate-500"
             )}>
-              {lastMsg ? (lastMsg.senderCode === currentUser.code ? `You: ${lastMsg.text}` : lastMsg.text) : 
-               <span className="text-slate-400">ID: {contact.code}</span>}
+              {isTyping ? (
+                <span className={`italic ${activeTheme.textAccent}`}>typing...</span>
+              ) : lastMsg ? (
+                lastMsg.senderCode === currentUser.code ? `You: ${lastMsg.text}` : lastMsg.text
+              ) : (
+                <span className="text-slate-400">ID: {contact.code}</span>
+              )}
             </span>
             {unread && (
                <div className={`w-5 h-5 rounded-full ${activeTheme.bgAccent} text-white text-[10px] flex items-center justify-center flex-shrink-0 font-medium`}>1</div>
@@ -176,9 +197,11 @@ interface SidebarProps {
   onSelectContact: (c: Contact) => void;
   onOpenProfile: () => void;
   onNewMessage?: (contact: Contact, text: string) => void;
+  onlineUsers?: Record<string, boolean>;
+  typingUsers?: Record<string, string>;
 }
 
-export function Sidebar({ currentUser, contacts, activeContact, onSelectContact, onOpenProfile, onNewMessage }: SidebarProps) {
+export function Sidebar({ currentUser, contacts, activeContact, onSelectContact, onOpenProfile, onNewMessage, onlineUsers = {}, typingUsers = {} }: SidebarProps) {
   const [isAdding, setIsAdding] = useState(false);
   const [addCode, setAddCode] = useState('');
   const [addError, setAddError] = useState('');
@@ -485,6 +508,8 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
                 isSelected={activeContact?.code === contact.code}
                 onSelect={() => onSelectContact(contact)}
                 onNewMessage={onNewMessage}
+                isOnline={onlineUsers[contact.code]}
+                isTyping={typingUsers[contact.code] === currentUser.code}
               />
             ))}
           </ul>

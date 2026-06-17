@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { User } from '../lib/types';
 import { supabase } from '../lib/supabase';
-import { X, Copy, Check, Palette, Sparkles, Sliders, LogOut, Camera, Bell } from 'lucide-react';
+import { X, Copy, Check, Palette, Sparkles, Sliders, LogOut, Camera, Bell, Volume2 } from 'lucide-react';
 import { THEMES, AccentColor, getTheme, DEFAULT_ACCENT } from '../lib/theme';
 import { getAvatarColor } from '../lib/utils';
+import { playSound } from '../lib/sounds';
 
 // Helper to compress avatar image
 const compressAvatar = (dataUrl: string): Promise<string> => {
@@ -61,6 +62,9 @@ export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalPro
   const [patternStyle, setPatternStyle] = useState(currentUser.patternStyle || 'dots');
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
     return localStorage.getItem(`notifications_${currentUser.code}`) === 'true';
+  });
+  const [soundsEnabled, setSoundsEnabled] = useState(() => {
+    return localStorage.getItem(`sounds_${currentUser.code}`) !== 'false';
   });
   
   const [copied, setCopied] = useState(false);
@@ -128,6 +132,7 @@ export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalPro
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    playSound('tap', currentUser.code);
     setSaving(true);
     
     // Save notifications to browser storage locally
@@ -335,54 +340,105 @@ export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalPro
             </div>
 
             {/* Browser Notifications Toggle */}
-            <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-100">
-              <div className="flex-1 min-w-0 pr-3">
-                <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                  <Bell className={`w-4 h-4 ${activeTheme.textAccent}`} />
-                  Browser Notifications
-                </label>
-                <p className="text-xs text-slate-400 font-medium leading-relaxed mt-0.5">Alerts for new messages (Open in new tab to enable)</p>
-              </div>
-              
-              <button
-                type="button"
-                onClick={async () => {
-                  const newState = !notificationsEnabled;
-                  if (newState) {
-                    if (!('Notification' in window)) {
-                      alert("This browser does not support desktop notification");
-                      return;
-                    }
-                    try {
-                      let permission = Notification.permission;
-                      if (permission !== 'granted') {
-                        permission = await Notification.requestPermission();
-                      }
-                      
-                      if (permission !== 'granted') {
-                        alert("You need to allow notifications in your browser settings. If you're currently in an iframe, try opening the app in a new tab first.");
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                <div className="flex-1 min-w-0 pr-3">
+                  <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                    <Bell className={`w-4 h-4 ${activeTheme.textAccent}`} />
+                    Browser Notifications
+                  </label>
+                  <p className="text-xs text-slate-400 font-medium leading-relaxed mt-0.5">Alerts for new messages (Open in new tab to enable)</p>
+                </div>
+                
+                <button
+                  type="button"
+                  onClick={async () => {
+                    playSound('tap', currentUser.code);
+                    const newState = !notificationsEnabled;
+                    if (newState) {
+                      if (!('Notification' in window)) {
+                        alert("This browser does not support desktop notification");
                         return;
                       }
-                    } catch (err) {
-                      console.error("Permission request error:", err);
-                      alert("Error requesting notification permission. Please try opening the app in a new tab.");
-                      return;
+                      try {
+                        let permission = Notification.permission;
+                        if (permission !== 'granted') {
+                          permission = await Notification.requestPermission();
+                        }
+                        
+                        if (permission !== 'granted') {
+                          alert("You need to allow notifications in your browser settings. If you're currently in an iframe, try opening the app in a new tab first.");
+                          return;
+                        }
+                      } catch (err) {
+                        console.error("Permission request error:", err);
+                        alert("Error requesting notification permission. Please try opening the app in a new tab.");
+                        return;
+                      }
                     }
-                  }
-                  
-                  setNotificationsEnabled(newState);
-                  localStorage.setItem(`notifications_${currentUser.code}`, newState ? 'true' : 'false');
-                }}
-                className={`w-12 h-6 rounded-full transition-colors relative focus:outline-none ${
-                  notificationsEnabled ? activeTheme.bgAccent : 'bg-slate-300'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 bg-white w-5 h-5 rounded-full shadow-md transition-transform transform ${
-                    notificationsEnabled ? 'translate-x-6' : 'translate-x-0'
+                    
+                    setNotificationsEnabled(newState);
+                    localStorage.setItem(`notifications_${currentUser.code}`, newState ? 'true' : 'false');
+                  }}
+                  className={`w-12 h-6 rounded-full transition-colors relative focus:outline-none ${
+                    notificationsEnabled ? activeTheme.bgAccent : 'bg-slate-300'
                   }`}
-                />
-              </button>
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 bg-white w-5 h-5 rounded-full shadow-md transition-transform transform ${
+                      notificationsEnabled ? 'translate-x-6' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {/* In-App Sounds Toggle */}
+              <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                <div className="flex-1 min-w-0 pr-3">
+                  <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                    <Volume2 className={`w-4 h-4 ${activeTheme.textAccent}`} />
+                    In-App Sounds
+                  </label>
+                  <p className="text-xs text-slate-400 font-medium leading-relaxed mt-0.5">Play crisp sound effects on messages, typing and interactions</p>
+                </div>
+                
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const newState = !soundsEnabled;
+                    setSoundsEnabled(newState);
+                    localStorage.setItem(`sounds_${currentUser.code}`, newState ? 'true' : 'false');
+                    if (newState) {
+                      // Play a test sound immediately using the current state since state update is async
+                      const playTest = await import('../lib/sounds');
+                      // Note we temporarily force it to play even if state hasn't updated yet.
+                      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+                      if (AudioContext) {
+                        const ctx = new AudioContext();
+                        const osc = ctx.createOscillator();
+                        const gain = ctx.createGain();
+                        osc.frequency.setValueAtTime(523.25, ctx.currentTime);
+                        gain.gain.setValueAtTime(0, ctx.currentTime);
+                        gain.gain.linearRampToValueAtTime(0.1, ctx.currentTime + 0.015);
+                        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+                        osc.connect(gain);
+                        gain.connect(ctx.destination);
+                        osc.start();
+                        osc.stop(ctx.currentTime + 0.15);
+                      }
+                    }
+                  }}
+                  className={`w-12 h-6 rounded-full transition-colors relative focus:outline-none ${
+                    soundsEnabled ? activeTheme.bgAccent : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 bg-white w-5 h-5 rounded-full shadow-md transition-transform transform ${
+                      soundsEnabled ? 'translate-x-6' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
 
             {/* Action Buttons */}

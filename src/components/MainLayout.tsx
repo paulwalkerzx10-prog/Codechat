@@ -16,10 +16,71 @@ export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [showProfile, setShowProfile] = useState(false);
   const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  const [presenceChannel, setPresenceChannel] = useState<any>(null);
   
   const [toast, setToast] = useState<{ id: string; contactName: string; text: string; avatarUrl?: string; onClick: () => void } | null>(null);
 
+  const [onlineUsers, setOnlineUsers] = useState<Record<string, boolean>>({});
+  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
+
   const activeTheme = getTheme(currentUser.accentColor);
+
+  useEffect(() => {
+    const channelId = `presence:global`;
+    const channel = supabase.channel(channelId, {
+      config: {
+        presence: {
+          key: currentUser.code,
+        },
+      },
+    });
+
+    channel.on('presence', { event: 'sync' }, () => {
+      const state = channel.presenceState();
+      const online: Record<string, boolean> = {};
+      const typing: Record<string, string> = {};
+
+      for (const [key, presences] of Object.entries(state)) {
+        if (presences.length > 0) {
+          online[key] = true;
+          // check if typing
+          const p = presences[presences.length - 1] as any;
+          if (p.typingTo) {
+            typing[key] = p.typingTo;
+          }
+        }
+      }
+      setOnlineUsers(online);
+      setTypingUsers(typing);
+    });
+
+    channel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await channel.track({
+          online: true,
+          typingTo: null,
+          updatedAt: new Date().toISOString()
+        });
+      }
+    });
+
+    setPresenceChannel(channel);
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser.code]);
+
+  const setTypingStatus = async (typingToUserCode: string | null) => {
+    if (presenceChannel) {
+      await presenceChannel.track({
+        online: true,
+        typingTo: typingToUserCode,
+        updatedAt: new Date().toISOString()
+      });
+    }
+  };
+
 
   const handleNewMessage = (contact: Contact, text: string) => {
     const notifsEnabled = localStorage.getItem(`notifications_${currentUser.code}`) === 'true';
@@ -232,7 +293,7 @@ export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
 
   return (
     <div 
-      className={`flex h-screen ${activeTheme.bgLight} text-slate-900 font-sans overflow-hidden transition-colors duration-300`}
+      className={`flex h-[100dvh] ${activeTheme.bgLight} text-slate-900 font-sans overflow-hidden transition-colors duration-300`}
       style={getPatternStyle()}
     >
       {/* Sidebar - Contacts */}
@@ -244,6 +305,8 @@ export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
           onSelectContact={handleSelectContact}
           onOpenProfile={() => setShowProfile(true)}
           onNewMessage={handleNewMessage}
+          onlineUsers={onlineUsers}
+          typingUsers={typingUsers}
         />
       </div>
 
@@ -258,6 +321,9 @@ export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
               setActiveContact(null);
               setIsMobileChatOpen(false);
             }}
+            setTypingStatus={setTypingStatus}
+            onlineUsers={onlineUsers}
+            typingUsers={typingUsers}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center bg-white/20 backdrop-blur-sm">

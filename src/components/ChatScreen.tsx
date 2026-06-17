@@ -5,6 +5,7 @@ import { Send, ArrowLeft, Trash2, Shield, Lock, Plus, Smile, Mic, Paperclip, Fil
 import { getAvatarColor, cn } from '../lib/utils';
 import { getTheme } from '../lib/theme';
 import { ConfirmDialog } from './ConfirmDialog';
+import { playSound } from '../lib/sounds';
 
 // Helper to compress images so they fit safely under Firestore document boundaries and size limits
 const compressImage = (dataUrl: string): Promise<string> => {
@@ -59,9 +60,12 @@ interface ChatScreenProps {
   contact: Contact;
   onBack: () => void;
   onRemoveContact: () => void;
+  setTypingStatus?: (userCode: string | null) => void;
+  onlineUsers?: Record<string, boolean>;
+  typingUsers?: Record<string, string>;
 }
 
-export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: ChatScreenProps) {
+export function ChatScreen({ currentUser, contact, onBack, onRemoveContact, setTypingStatus, onlineUsers = {}, typingUsers = {} }: ChatScreenProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -272,10 +276,33 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
     }
   };
 
+  const typingTimeoutRef = useRef<any>(null);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInputText(e.target.value);
+    playSound('type', currentUser.code);
+    if (setTypingStatus) {
+      setTypingStatus(contact.code);
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      typingTimeoutRef.current = setTimeout(() => {
+        setTypingStatus(null);
+      }, 3000);
+    }
+  };
+
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     const text = inputText.trim();
     if (!text && !selectedFile) return;
+
+    playSound('send', currentUser.code);
+
+    if (setTypingStatus) {
+      setTypingStatus(null);
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    }
 
     setIsSending(true);
     setInputText('');
@@ -505,8 +532,14 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
             </div>
           )}
           <div>
-            <h2 className="font-bold text-slate-900">{name}</h2>
-            <div className="text-[10px] font-semibold text-emerald-500">Online</div>
+            <h2 className="font-bold text-slate-900 leading-tight">{name}</h2>
+            {typingUsers[contact.code] === currentUser.code ? (
+              <div className={`text-xs font-medium ${activeTheme.textAccent} italic`}>typing...</div>
+            ) : onlineUsers[contact.code] ? (
+              <div className="text-xs font-semibold text-emerald-500">Online</div>
+            ) : (
+              <div className="text-xs font-medium text-slate-400">Offline</div>
+            )}
           </div>
         </div>
         
@@ -788,7 +821,7 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
               <input
                 type="text"
                 value={inputText}
-                onChange={e => setInputText(e.target.value)}
+                onChange={handleInputChange}
                 placeholder="Type a message..."
                 className="flex-1 bg-transparent px-4 py-2 text-[15px] text-slate-900 focus:outline-none placeholder:text-slate-400"
               />
