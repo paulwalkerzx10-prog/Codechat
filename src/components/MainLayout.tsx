@@ -5,6 +5,7 @@ import { Sidebar } from './Sidebar';
 import { ChatScreen } from './ChatScreen';
 import { ProfileModal } from './ProfileModal';
 import { getTheme } from '../lib/theme';
+import { playSound } from '../lib/sounds';
 
 interface MainLayoutProps {
   currentUser: User;
@@ -85,26 +86,6 @@ export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
   const handleNewMessage = (contact: Contact, text: string) => {
     const notifsEnabled = localStorage.getItem(`notifications_${currentUser.code}`) === 'true';
     if (!notifsEnabled) return;
-
-    // Play a short generic beep sound quietly
-    try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
-      
-      oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
-      oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1); // A5
-
-      gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-      gainNode.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.05);
-      gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
-
-      oscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-      oscillator.start(audioCtx.currentTime);
-      oscillator.stop(audioCtx.currentTime + 0.3);
-    } catch(e) {}
 
     // Show toast
     const id = Date.now().toString();
@@ -283,11 +264,13 @@ export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
   }, [contacts, activeContact]);
 
   const handleSelectContact = (contact: Contact) => {
+    playSound('tap', currentUser.code);
     setActiveContact(contact);
     setIsMobileChatOpen(true);
   };
 
   const handleBackToContacts = () => {
+    playSound('tap', currentUser.code);
     setIsMobileChatOpen(false);
   };
 

@@ -278,6 +278,14 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact, setT
 
   const typingTimeoutRef = useRef<any>(null);
 
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputText(e.target.value);
     playSound('type', currentUser.code);

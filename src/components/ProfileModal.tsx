@@ -409,23 +409,7 @@ export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalPro
                     setSoundsEnabled(newState);
                     localStorage.setItem(`sounds_${currentUser.code}`, newState ? 'true' : 'false');
                     if (newState) {
-                      // Play a test sound immediately using the current state since state update is async
-                      const playTest = await import('../lib/sounds');
-                      // Note we temporarily force it to play even if state hasn't updated yet.
-                      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-                      if (AudioContext) {
-                        const ctx = new AudioContext();
-                        const osc = ctx.createOscillator();
-                        const gain = ctx.createGain();
-                        osc.frequency.setValueAtTime(523.25, ctx.currentTime);
-                        gain.gain.setValueAtTime(0, ctx.currentTime);
-                        gain.gain.linearRampToValueAtTime(0.1, ctx.currentTime + 0.015);
-                        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-                        osc.connect(gain);
-                        gain.connect(ctx.destination);
-                        osc.start();
-                        osc.stop(ctx.currentTime + 0.15);
-                      }
+                      playSound('receive', currentUser.code);
                     }
                   }}
                   className={`w-12 h-6 rounded-full transition-colors relative focus:outline-none ${

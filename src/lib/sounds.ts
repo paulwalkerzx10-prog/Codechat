@@ -1,11 +1,22 @@
+let sharedAudioContext: AudioContext | null = null;
+
 export const playSound = (type: 'tap' | 'type' | 'receive' | 'send', userCode: string) => {
   const soundsEnabled = localStorage.getItem(`sounds_${userCode}`) !== 'false';
   if (!soundsEnabled) return;
 
   try {
-    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContext) return;
-    const ctx = new AudioContext();
+    if (!sharedAudioContext) {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) return;
+      sharedAudioContext = new AudioContextClass();
+    }
+    
+    // Resume context if it was suspended (autoplay policy)
+    if (sharedAudioContext.state === 'suspended') {
+      sharedAudioContext.resume();
+    }
+    
+    const ctx = sharedAudioContext;
 
     const playTone = (freq: number, type: OscillatorType, duration: number, vol: number = 0.1) => {
       const osc = ctx.createOscillator();
@@ -19,7 +30,7 @@ export const playSound = (type: 'tap' | 'type' | 'receive' | 'send', userCode: s
 
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.start();
+      osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + duration);
     };
 
