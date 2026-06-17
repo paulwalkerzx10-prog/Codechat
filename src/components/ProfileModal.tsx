@@ -1,7 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { User } from '../lib/types';
 import { supabase } from '../lib/supabase';
-import { X, Copy, Check, Palette, Sparkles, Sliders, LogOut, Camera } from 'lucide-react';
+import { X, Copy, Check, Palette, Sparkles, Sliders, LogOut, Camera, Bell } from 'lucide-react';
 import { THEMES, AccentColor, getTheme, DEFAULT_ACCENT } from '../lib/theme';
 import { getAvatarColor } from '../lib/utils';
 
@@ -59,10 +59,17 @@ export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalPro
   );
   const [patternEnabled, setPatternEnabled] = useState(currentUser.patternEnabled ?? true);
   const [patternStyle, setPatternStyle] = useState(currentUser.patternStyle || 'dots');
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    return localStorage.getItem(`notifications_${currentUser.code}`) === 'true';
+  });
   
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
   
+  const [deletingConfirm, setDeletingConfirm] = useState(false);
+  const [deleteInput, setDeleteInput] = useState('');
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeTheme = THEMES[accentColor] || THEMES[DEFAULT_ACCENT];
@@ -71,6 +78,28 @@ export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalPro
     navigator.clipboard.writeText(currentUser.code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDeleteAccount = async () => {
+    if (deleteInput.toLowerCase() !== 'delete') return;
+    setIsDeletingUser(true);
+    try {
+      // First delete contacts to clean up, then messages, or just let DB cascade if applicable
+      // But we will just delete the user, and relying on the app to handle any loose ends.
+      // Easiest is to delete user account
+      const { error } = await supabase.from('users').delete().eq('code', currentUser.code);
+      if (error) throw error;
+      
+      // We can also try to delete their contacts
+      await supabase.from('contacts').delete().or(`owner_code.eq.${currentUser.code},contact_code.eq.${currentUser.code}`);
+      
+      onClose();
+      if (onLogout) onLogout();
+    } catch (err: any) {
+      console.error(err);
+      alert("Error deleting account: " + err.message);
+      setIsDeletingUser(false);
+    }
   };
 
   const handleAvatarSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -100,6 +129,10 @@ export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalPro
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    
+    // Save notifications to browser storage locally
+    localStorage.setItem(`notifications_${currentUser.code}`, notificationsEnabled ? 'true' : 'false');
+    
     try {
       const { error } = await supabase.from('users').update({
         display_name: displayName.trim(),
@@ -301,17 +334,68 @@ export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalPro
               )}
             </div>
 
+            {/* Browser Notifications Toggle */}
+            <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-100">
+              <div className="flex-1 min-w-0 pr-3">
+                <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                  <Bell className={`w-4 h-4 ${activeTheme.textAccent}`} />
+                  Browser Notifications
+                </label>
+                <p className="text-xs text-slate-400 font-medium leading-relaxed mt-0.5">Alerts for new messages (Open in new tab to enable)</p>
+              </div>
+              
+              <button
+                type="button"
+                onClick={async () => {
+                  const newState = !notificationsEnabled;
+                  if (newState) {
+                    if (!('Notification' in window)) {
+                      alert("This browser does not support desktop notification");
+                      return;
+                    }
+                    try {
+                      let permission = Notification.permission;
+                      if (permission !== 'granted') {
+                        permission = await Notification.requestPermission();
+                      }
+                      
+                      if (permission !== 'granted') {
+                        alert("You need to allow notifications in your browser settings. If you're currently in an iframe, try opening the app in a new tab first.");
+                        return;
+                      }
+                    } catch (err) {
+                      console.error("Permission request error:", err);
+                      alert("Error requesting notification permission. Please try opening the app in a new tab.");
+                      return;
+                    }
+                  }
+                  
+                  setNotificationsEnabled(newState);
+                  localStorage.setItem(`notifications_${currentUser.code}`, newState ? 'true' : 'false');
+                }}
+                className={`w-12 h-6 rounded-full transition-colors relative focus:outline-none ${
+                  notificationsEnabled ? activeTheme.bgAccent : 'bg-slate-300'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 bg-white w-5 h-5 rounded-full shadow-md transition-transform transform ${
+                    notificationsEnabled ? 'translate-x-6' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
             {/* Action Buttons */}
             <div className="flex flex-col gap-3 pt-2">
               <button
                 type="submit"
-                disabled={saving}
+                disabled={saving || deletingConfirm}
                 className={`w-full text-white font-bold py-4 rounded-2xl transition-all disabled:opacity-50 shadow-lg ${activeTheme.bgAccent} ${activeTheme.bgHover} ${activeTheme.shadowLight} active:scale-[0.99]`}
               >
                 {saving ? 'Saving preferences...' : 'Save Settings'}
               </button>
               
-              {onLogout && (
+              {onLogout && !deletingConfirm && (
                 <button
                   type="button"
                   onClick={onLogout}
@@ -320,6 +404,48 @@ export function ProfileModal({ currentUser, onClose, onLogout }: ProfileModalPro
                   <LogOut className="w-5 h-5" />
                   Log Out
                 </button>
+              )}
+
+              {!deletingConfirm ? (
+                <button
+                  type="button"
+                  onClick={() => setDeletingConfirm(true)}
+                  className="w-full text-slate-400 font-bold py-3 text-sm rounded-2xl hover:bg-slate-100 transition-colors active:scale-[0.99]"
+                >
+                  Delete Account
+                </button>
+              ) : (
+                <div className="bg-red-50 p-4 rounded-2xl border border-red-200 mt-4 space-y-3">
+                  <p className="text-sm font-bold text-red-600">Delete Account</p>
+                  <p className="text-xs text-red-500/80">This action is irreversible. Type "delete" to confirm.</p>
+                  <input
+                    type="text"
+                    value={deleteInput}
+                    onChange={(e) => setDeleteInput(e.target.value)}
+                    placeholder="delete"
+                    className="w-full bg-white border border-red-200 rounded-xl px-3 py-2 text-sm text-red-600 focus:outline-none focus:ring-2 focus:ring-red-400"
+                  />
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleDeleteAccount}
+                      disabled={deleteInput.toLowerCase() !== 'delete' || isDeletingUser}
+                      className="flex-1 bg-red-500 text-white font-bold py-2.5 rounded-xl disabled:opacity-50 transition-all hover:bg-red-600"
+                    >
+                      {isDeletingUser ? 'Deleting...' : 'Confirm Delete'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDeletingConfirm(false);
+                        setDeleteInput('');
+                      }}
+                      className="flex-1 bg-neutral-200 text-neutral-600 font-bold py-2.5 rounded-xl hover:bg-neutral-300 transition-all"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
           </form>

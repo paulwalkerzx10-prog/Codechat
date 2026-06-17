@@ -16,8 +16,53 @@ export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [showProfile, setShowProfile] = useState(false);
   const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  
+  const [toast, setToast] = useState<{ id: string; contactName: string; text: string; avatarUrl?: string; onClick: () => void } | null>(null);
 
   const activeTheme = getTheme(currentUser.accentColor);
+
+  const handleNewMessage = (contact: Contact, text: string) => {
+    const notifsEnabled = localStorage.getItem(`notifications_${currentUser.code}`) === 'true';
+    if (!notifsEnabled) return;
+
+    // Play a short generic beep sound quietly
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+      oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1); // A5
+
+      gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.05);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      oscillator.start(audioCtx.currentTime);
+      oscillator.stop(audioCtx.currentTime + 0.3);
+    } catch(e) {}
+
+    // Show toast
+    const id = Date.now().toString();
+    setToast({
+      id,
+      contactName: contact.displayName || contact.code,
+      text,
+      avatarUrl: contact.avatarUrl || undefined,
+      onClick: () => {
+        handleSelectContact(contact);
+        setToast(null);
+      }
+    });
+
+    // Auto-dismiss toast after 5s
+    setTimeout(() => {
+      setToast(prev => prev && prev.id === id ? null : prev);
+    }, 5000);
+  };
 
   const getPatternStyle = () => {
     if (!currentUser.patternEnabled) {
@@ -198,6 +243,7 @@ export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
           activeContact={activeContact}
           onSelectContact={handleSelectContact}
           onOpenProfile={() => setShowProfile(true)}
+          onNewMessage={handleNewMessage}
         />
       </div>
 
@@ -231,6 +277,39 @@ export function MainLayout({ currentUser, onLogout }: MainLayoutProps) {
           onClose={() => setShowProfile(false)} 
           onLogout={onLogout}
         />
+      )}
+
+      {/* In-App Toast Notification */}
+      {toast && (
+        <div className="fixed top-4 right-4 z-50 animate-fade-in sm:w-[320px] w-[calc(100vw-2rem)]">
+          <div 
+            className="bg-white rounded-2xl shadow-xl border border-slate-100 p-3 flex items-center gap-3 cursor-pointer hover:bg-slate-50 transition-colors"
+            onClick={toast.onClick}
+          >
+            {toast.avatarUrl ? (
+              <img src={toast.avatarUrl} alt={toast.contactName} className="w-10 h-10 rounded-full object-cover flex-shrink-0 bg-slate-100" />
+            ) : (
+              <div className={`w-10 h-10 ${activeTheme.bgAccent} rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0`}>
+                {toast.contactName.substring(0, 2).toUpperCase()}
+              </div>
+            )}
+            <div className="flex-1 min-w-0 flex flex-col justify-center">
+              <p className="text-sm font-bold text-slate-800 truncate">{toast.contactName}</p>
+              <p className="text-xs text-slate-500 truncate mt-0.5">{toast.text}</p>
+            </div>
+            <button 
+              className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors"
+              onClick={(e) => {
+                e.stopPropagation();
+                setToast(null);
+              }}
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

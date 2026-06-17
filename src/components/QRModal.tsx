@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { X, Copy, Check, Download, Camera, Upload, RefreshCw, AlertCircle, Sparkles } from 'lucide-react';
+import { X, Copy, Check, Download, Upload, Camera, RefreshCw, AlertCircle, Sparkles } from 'lucide-react';
 import jsQR from 'jsqr';
 import { cn } from '../lib/utils';
 import { User } from '../lib/types';
@@ -17,19 +17,10 @@ interface QRModalProps {
 export function QRModal({ currentUser, contacts, onClose, onContactAdded, initialTab = 'mine' }: QRModalProps) {
   const [activeTab, setActiveTab] = useState<'mine' | 'scan'>(initialTab);
   const [copied, setCopied] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const scanningRef = useRef(false);
   const [scanError, setScanError] = useState<string | null>(null);
-  const [cameraBlocked, setCameraBlocked] = useState(false);
   const [addingCode, setAddingCode] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-
-  // Camera & Canvas Refs
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const requestRef = useRef<number | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
 
   // Copy code implementation
   const handleCopyCode = () => {
@@ -56,116 +47,15 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
     URL.revokeObjectURL(svgUrl);
   };
 
-  // Toggle/Stop Scanning
-  const stopCamera = () => {
-    scanningRef.current = false;
-    setScanning(false);
-    if (requestRef.current) {
-      cancelAnimationFrame(requestRef.current);
-      requestRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-  };
-
-  useEffect(() => {
-    return () => {
-      stopCamera();
-    };
-  }, []);
-
   // Handle Tab Change
   const handleTabChange = (tab: 'mine' | 'scan') => {
     setActiveTab(tab);
     setScanError(null);
     setSubmitError(null);
     setAddingCode(null);
-    if (tab !== 'scan') {
-      stopCamera();
-    }
   };
 
-  // Start Camera QR Scanning
-  const startCamera = async () => {
-    setScanError(null);
-    setCameraBlocked(false);
-    setAddingCode(null);
-
-    let stream: MediaStream | null = null;
-    try {
-      try {
-         stream = await navigator.mediaDevices.getUserMedia({
-           video: { facingMode: 'environment' }
-         });
-      } catch (e: any) {
-         // Fallback if environment camera constraint fails
-         stream = await navigator.mediaDevices.getUserMedia({
-           video: true
-         });
-      }
-      
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute('playsinline', 'true'); // Required for iOS
-        videoRef.current.play();
-        setScanning(true);
-        scanningRef.current = true;
-        // The first frame request
-        requestRef.current = requestAnimationFrame(() => scanFrame(true));
-      }
-    } catch (err: any) {
-      console.warn('Camera permissions issue or no device:', err);
-      setCameraBlocked(true);
-      setScanError(
-        'Could not access the camera (Permission denied). To fix this, try opening the application in a new tab, or use the file upload option to select an image.'
-      );
-    }
-  };
-
-  // Scan frame by frame
-  const scanFrame = (isFirstFrame = false) => {
-    if (!scanningRef.current) return;
-    
-    if (!videoRef.current || !canvasRef.current) {
-      if (scanningRef.current) {
-         requestRef.current = requestAnimationFrame(() => scanFrame());
-      }
-      return;
-    }
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-    if (video.readyState === video.HAVE_ENOUGH_DATA && ctx) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: 'attemptBoth'
-      });
-
-      if (code) {
-        const decoded = code.data.trim().toUpperCase();
-        if (decoded.length === 6) {
-          stopCamera();
-          handleFoundCode(decoded);
-          return; // Stop scanning once we find it
-        }
-      }
-    }
-    
-    if (scanningRef.current) {
-       requestRef.current = requestAnimationFrame(() => scanFrame());
-    }
-  };
-
-  // Handle Decoded QR code (from camera or file uploads)
+  // Handle Decoded QR code (from file uploads or manual entry)
   const handleFoundCode = (code: string) => {
     setScanError(null);
     setSubmitError(null);
@@ -295,10 +185,7 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
             <h2 className="text-xl font-bold text-slate-900 tracking-tight">CodeChat Share</h2>
           </div>
           <button 
-            onClick={() => {
-              stopCamera();
-              onClose();
-            }} 
+            onClick={onClose} 
             className="p-2 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -447,96 +334,68 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
                 /* Interactive scan controls */
                 <div className="flex-1 flex flex-col justify-center">
                   
-                  {scanning ? (
-                    /* Live camera scanning dashboard */
-                    <div className="relative w-full max-w-sm mx-auto aspect-square bg-slate-950 rounded-3xl overflow-hidden shadow-inner border-2 border-violet-300">
-                      <video 
-                        ref={videoRef}
-                        className="w-full h-full object-cover"
-                        autoPlay
-                        playsInline
-                        muted
+                  {/* Inactive Scan Controls Selector */}
+                  <div className="flex flex-col items-center gap-4 py-6 w-full max-w-sm mx-auto">
+                    
+                    {/* Manual Code Entry */}
+                    <form 
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const formData = new FormData(e.currentTarget);
+                        const code = formData.get('manualCode') as string;
+                        if (code && code.trim().length === 6) {
+                          handleFoundCode(code.trim().toUpperCase());
+                        } else {
+                          setScanError('Code must be exactly 6 characters long.');
+                        }
+                      }}
+                      className="w-full flex items-center gap-2"
+                    >
+                      <input 
+                        name="manualCode"
+                        type="text" 
+                        placeholder="Enter 6-char code" 
+                        maxLength={6}
+                        className="flex-1 px-4 py-3 rounded-xl border border-slate-200 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200 uppercase font-mono tracking-widest text-center"
                       />
-                      <canvas 
-                        ref={canvasRef} 
-                        className="hidden" 
-                      />
-                      
-                      {/* Scanning visual overlay */}
-                      <div className="absolute inset-x-8 inset-y-8 border-2 border-dashed border-violet-400 rounded-2xl pointer-events-none flex flex-col justify-between p-4 animate-pulse">
-                        <div className="flex justify-between">
-                          <div className="w-4 h-4 border-l-2 border-t-2 border-violet-400"></div>
-                          <div className="w-4 h-4 border-r-2 border-t-2 border-violet-400"></div>
-                        </div>
-                        <div className="flex justify-between">
-                          <div className="w-4 h-4 border-l-2 border-b-2 border-violet-400"></div>
-                          <div className="w-4 h-4 border-r-2 border-b-2 border-violet-400"></div>
-                        </div>
-                      </div>
-
-                      <div className="absolute inset-x-0 bottom-4 text-center">
-                        <span className="bg-slate-900/80 text-white text-xs px-3 py-1 rounded-full font-medium backdrop-blur-sm shadow-md">
-                          Position QR code in center
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
-                    /* Inactive Scan Controls Selector */
-                    <div className="flex flex-col items-center gap-4 py-6 w-full max-w-sm mx-auto">
-                      
-                      {/* Camera Button Trigger */}
-                      <button
-                        onClick={startCamera}
-                        className="w-full flex items-center gap-4 bg-violet-50 text-violet-700 p-4 rounded-2xl hover:bg-violet-100/70 border border-violet-200 transition-all text-left"
+                      <button 
+                        type="submit"
+                        className="bg-violet-600 text-white font-semibold py-3 px-6 rounded-xl hover:bg-violet-700 transition-colors whitespace-nowrap"
                       >
-                        <div className="w-12 h-12 bg-violet-600 text-white rounded-xl flex items-center justify-center flex-shrink-0">
+                        Add
+                      </button>
+                    </form>
+
+                    <div className="flex items-center gap-3 w-full my-4">
+                      <div className="flex-1 h-px bg-slate-100"></div>
+                      <span className="text-slate-400 text-xs font-semibold uppercase tracking-wider">or</span>
+                      <div className="flex-1 h-px bg-slate-100"></div>
+                    </div>
+
+                    {/* Camera / Upload options */}
+                    <div className="w-full flex flex-col gap-3 mt-2">
+                      {/* Take Photo Option */}
+                      <label className="w-full flex items-center gap-4 bg-white border-2 border-slate-200 p-4 rounded-2xl hover:bg-slate-50 transition-all text-left cursor-pointer group">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          onChange={handleImageUpload}
+                          className="hidden"
+                        />
+                        <div className="w-12 h-12 bg-violet-50 text-violet-600 rounded-xl flex items-center justify-center flex-shrink-0 border border-violet-100 group-hover:bg-violet-100 transition-colors">
                           <Camera className="w-6 h-6" />
                         </div>
                         <div>
-                          <h4 className="font-bold text-slate-900 mb-0.5">Use Live Camera</h4>
+                          <h4 className="font-bold text-slate-900 mb-0.5 group-hover:text-violet-600 transition-colors">Take a Photo</h4>
                           <p className="text-xs text-slate-500 leading-relaxed">
-                            Scan a CodeChat user code on another screen.
+                            Use your camera to snap a QR code
                           </p>
                         </div>
-                      </button>
+                      </label>
 
-                      <div className="flex items-center gap-3 w-full my-1">
-                        <div className="flex-1 h-px bg-slate-100"></div>
-                        <span className="text-slate-400 text-xs font-semibold uppercase tracking-wider">or</span>
-                        <div className="flex-1 h-px bg-slate-100"></div>
-                      </div>
-
-                      {/* Manual Code Entry */}
-                      <form 
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          const formData = new FormData(e.currentTarget);
-                          const code = formData.get('manualCode') as string;
-                          if (code && code.trim().length === 6) {
-                            handleFoundCode(code.trim().toUpperCase());
-                          } else {
-                            setScanError('Code must be exactly 6 characters long.');
-                          }
-                        }}
-                        className="w-full flex items-center gap-2"
-                      >
-                        <input 
-                          name="manualCode"
-                          type="text" 
-                          placeholder="Enter 6-char code" 
-                          maxLength={6}
-                          className="flex-1 px-4 py-3 rounded-xl border border-slate-200 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200 uppercase font-mono tracking-widest text-center"
-                        />
-                        <button 
-                          type="submit"
-                          className="bg-violet-600 text-white font-semibold py-3 px-6 rounded-xl hover:bg-violet-700 transition-colors whitespace-nowrap"
-                        >
-                          Add
-                        </button>
-                      </form>
-
-                      {/* File upload option (Super bulletproof) */}
-                      <label className="w-full flex items-center gap-4 bg-white border-2 border-dashed border-slate-200 p-4 rounded-2xl hover:bg-slate-50 transition-all text-left cursor-pointer group mt-4">
+                      {/* File upload option */}
+                      <label className="w-full flex items-center gap-4 bg-white border-2 border-dashed border-slate-200 p-4 rounded-2xl hover:bg-slate-50 transition-all text-left cursor-pointer group">
                         <input
                           type="file"
                           accept="image/*"
@@ -547,34 +406,25 @@ export function QRModal({ currentUser, contacts, onClose, onContactAdded, initia
                           <Upload className="w-6 h-6" />
                         </div>
                         <div>
-                          <h4 className="font-bold text-slate-900 mb-0.5 group-hover:text-violet-600 transition-colors">Upload Saved QR Code</h4>
+                          <h4 className="font-bold text-slate-900 mb-0.5 group-hover:text-violet-600 transition-colors">Upload Image</h4>
                           <p className="text-xs text-slate-500 leading-relaxed">
-                            Select a saved screenshot or captured photo of a QR scan.
+                            Select a saved screenshot or photo
                           </p>
                         </div>
                       </label>
-
                     </div>
-                  )}
+
+                  </div>
 
                   {/* Errors / Fallback Hints */}
                   {scanError && (
                     <div className="mt-4 flex gap-2.5 items-start py-3.5 px-4 bg-amber-50 text-amber-800 rounded-2xl text-xs max-w-sm mx-auto border border-amber-200/50">
                       <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600" />
                       <div className="leading-relaxed">
-                        <p className="font-bold">{cameraBlocked ? 'Camera Blocked/Unavailable' : 'Scan Issue'}</p>
+                        <p className="font-bold">Scan Issue</p>
                         <p>{scanError}</p>
                       </div>
                     </div>
-                  )}
-
-                  {scanning && (
-                    <button
-                      onClick={stopCamera}
-                      className="mt-6 mx-auto bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs py-2 px-4 rounded-lg transition-colors border border-slate-200"
-                    >
-                      Cancel Scanning
-                    </button>
                   )}
 
                 </div>

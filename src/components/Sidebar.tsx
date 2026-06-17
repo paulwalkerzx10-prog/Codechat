@@ -12,15 +12,22 @@ const ContactRow: React.FC<{
   currentUser: User; 
   isSelected: boolean; 
   onSelect: () => void; 
+  onNewMessage?: (contact: Contact, text: string) => void;
 }> = ({ 
   contact, 
   currentUser, 
   isSelected, 
-  onSelect 
+  onSelect,
+  onNewMessage
 }) => {
   const [lastMsg, setLastMsg] = useState<Message | null>(null);
   const convId = [currentUser.code, contact.code].sort().join('_');
   const activeTheme = getTheme(currentUser.accentColor);
+  const isSelectedRef = React.useRef(isSelected);
+
+  useEffect(() => {
+    isSelectedRef.current = isSelected;
+  }, [isSelected]);
 
   useEffect(() => {
     const fetchLatestMsg = async () => {
@@ -51,7 +58,42 @@ const ContactRow: React.FC<{
 
     const channelId = `public:messages:conversation_id=eq.${convId}-${Date.now()}`;
     const channel = supabase.channel(channelId)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${convId}` }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${convId}` }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          const newMsg = payload.new as any;
+          if (newMsg && newMsg.sender_code !== currentUser.code && !contact.isBlocked) {
+            const notifsEnabled = localStorage.getItem(`notifications_${currentUser.code}`) === 'true';
+            if (notifsEnabled && Notification.permission === 'granted') {
+              if (document.hidden || !isSelectedRef.current) {
+                const body = newMsg.text || 'Sent an attachment';
+                try {
+                  if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker.ready.then(registration => {
+                      registration.showNotification(`New message from ${contact.displayName || contact.code}`, {
+                        body,
+                        icon: contact.avatarUrl || '/favicon.ico'
+                      }).catch(() => {
+                        new Notification(`New message from ${contact.displayName || contact.code}`, {
+                          body,
+                          icon: contact.avatarUrl || undefined
+                        });
+                      });
+                    });
+                  } else {
+                    new Notification(`New message from ${contact.displayName || contact.code}`, {
+                      body,
+                      icon: contact.avatarUrl || undefined
+                    });
+                  }
+                } catch(e) {}
+              }
+            }
+            if (document.hidden || !isSelectedRef.current) {
+              const body = newMsg.text || 'Sent an attachment';
+              if (onNewMessage) onNewMessage(contact, body);
+            }
+          }
+        }
         fetchLatestMsg();
       })
       .subscribe();
@@ -59,7 +101,7 @@ const ContactRow: React.FC<{
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [convId, contact.clearedAt]);
+  }, [convId, contact.clearedAt, currentUser.code, contact.displayName, contact.code, contact.avatarUrl, contact, onNewMessage]);
 
   const name = contact.displayName || contact.code;
   
@@ -133,9 +175,10 @@ interface SidebarProps {
   activeContact: Contact | null;
   onSelectContact: (c: Contact) => void;
   onOpenProfile: () => void;
+  onNewMessage?: (contact: Contact, text: string) => void;
 }
 
-export function Sidebar({ currentUser, contacts, activeContact, onSelectContact, onOpenProfile }: SidebarProps) {
+export function Sidebar({ currentUser, contacts, activeContact, onSelectContact, onOpenProfile, onNewMessage }: SidebarProps) {
   const [isAdding, setIsAdding] = useState(false);
   const [addCode, setAddCode] = useState('');
   const [addError, setAddError] = useState('');
@@ -441,6 +484,7 @@ export function Sidebar({ currentUser, contacts, activeContact, onSelectContact,
                 currentUser={currentUser}
                 isSelected={activeContact?.code === contact.code}
                 onSelect={() => onSelectContact(contact)}
+                onNewMessage={onNewMessage}
               />
             ))}
           </ul>

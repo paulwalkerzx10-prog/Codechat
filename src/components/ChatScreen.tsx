@@ -157,7 +157,13 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
 
     const channelId = `public:messages:conversation_id=eq.${conversationId}-${Date.now()}`;
     const channel = supabase.channel(channelId)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}` }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}` }, (payload) => {
+        if (contact.isBlocked && payload.eventType === 'INSERT') {
+          const newMsg = payload.new as any;
+          if (newMsg && newMsg.sender_code !== currentUser.code) {
+             return; // Ignore new messages from blocked contact
+          }
+        }
         fetchMessages();
       })
       .subscribe();
@@ -278,6 +284,21 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
     setShowEmojiPicker(false);
 
     try {
+      // Check if we are blocked by the recipient
+      const { data: receiverContacts, error: blockErr } = await supabase.from('contacts')
+        .select('is_blocked')
+        .eq('user_code', contact.code)
+        .eq('contact_code', currentUser.code)
+        .limit(1);
+
+      if (blockErr) {
+        console.warn("Could not check block status:", blockErr);
+      }
+
+      if (receiverContacts && receiverContacts.length > 0 && receiverContacts[0].is_blocked) {
+        throw new Error("Message not delivered. You may have been blocked by this user.");
+      }
+
       const messageId = crypto.randomUUID ? crypto.randomUUID() : (Math.random().toString(36).substring(2) + Date.now().toString(36));
       
       const payload: any = {
@@ -301,8 +322,9 @@ export function ChatScreen({ currentUser, contact, onBack, onRemoveContact }: Ch
          }).eq('id', contact.id);
       }
 
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to deliver message:", err);
+      alert(err.message || "Failed to deliver message");
       // Restore states if failed
       if (text) setInputText(text);
       if (fileToSend) setSelectedFile(fileToSend);
